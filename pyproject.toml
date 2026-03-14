@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-chunk"
+version = "0.1.0"
+description = "Document processing pipeline for RAG systems — parse, chunk, embed, store"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # File type detection
+    "python-magic>=0.4.27",
+    # Document parsing
+    "PyMuPDF>=1.24.0",
+    "python-pptx>=0.6.23",
+    "python-docx>=1.1.0",
+    "marker-pdf>=1.0.0",
+    # Vector DB
+    "qdrant-client>=1.9.0",
+    # Object storage
+    "minio>=7.2.0",
+    # gRPC
+    "grpcio>=1.63.0",
+    "grpcio-tools>=1.63.0",
+    "protobuf>=4.25.0",
+    # Utilities
+    "numpy>=1.24.0,<2.0.0",
+    "tqdm>=4.65.0",
+    "python-dotenv>=1.0.0",
+    # Logging
+    "structlog>=24.1.0",
+    "opentelemetry-api>=1.40.0",
+    "opentelemetry-sdk>=1.40.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.40.0",
+    "opentelemetry-instrumentation-grpc>=0.61b0",
+    "prometheus-client>=0.24.1",
+    "pydantic-settings>=2.13.1",
+]
+
+[project.optional-dependencies]
+embeddings = [
+    "FlagEmbedding>=1.2.0",
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.11.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "ipdb>=0.13.13",
+]
+all = [
+    "document-chunk[embeddings,dev]",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+addopts = "-v --cov=src --cov-report=term-missing"

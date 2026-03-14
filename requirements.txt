@@ -1,0 +1,11 @@
+# Core dependencies — managed in pyproject.toml
+# Usage: pip install -e .
+
+# Install core only:
+#   pip install -e .
+#
+# Install with embeddings:
+#   pip install -e ".[embeddings]"
+#
+# Install for development:
+#   pip install -e ".[embeddings,dev]"
