@@ -1,0 +1,40 @@
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+
+class IFileStorage(ABC):
+    """
+    Port: lưu trữ raw files và images.
+    Trước mắt: MinIO. Có thể swap sang S3, GCS, local disk.
+    """
+
+    @abstractmethod
+    def upload(self, local_path: Path, remote_key: str) -> str:
+        """
+        Upload file lên storage.
+        Trả về URL hoặc remote_key để truy cập sau.
+        """
+        ...
+
+    @abstractmethod
+    def download(self, remote_key: str, local_path: Path) -> None:
+        """Download file từ storage về local_path."""
+        ...
+
+    @abstractmethod
+    def delete(self, remote_key: str) -> None:
+        """Xóa file trên storage."""
+        ...
+
+    @abstractmethod
+    def exists(self, remote_key: str) -> bool:
+        """Kiểm tra file có tồn tại không."""
+        ...
+
+    @abstractmethod
+    def get_url(self, remote_key: str, expires_in: int = 3600) -> str:
+        """
+        Tạo presigned URL để truy cập file.
+        expires_in: seconds.
+        """
+        ...
