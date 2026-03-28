@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package chunking;
+
+// ---------------------------------------------------------------------------
+// ChunkingService — document processing + semantic search
+// ---------------------------------------------------------------------------
+
+service ChunkingService {
+  // Nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO
+  rpc ProcessDocument(ProcessDocumentRequest) returns (ProcessDocumentResponse);
+
+  // Semantic search qua vector similarity
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Xóa toàn bộ chunks của một document
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+
+  // Health check — kiểm tra service còn sống không
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ---------------------------------------------------------------------------
+// ProcessDocument
+// ---------------------------------------------------------------------------
+
+message ProcessDocumentRequest {
+  bytes  file_data    = 1;  // Nội dung file (raw bytes)
+  string file_name    = 2;  // Tên file (dùng để detect type: .pdf, .docx, ...)
+  string document_id  = 3;  // Optional — tự sinh UUID nếu để trống
+  string language     = 4;  // Optional — auto-detect nếu để trống
+  map<string, string> metadata = 5;  // Metadata tùy ý (key-value)
+}
+
+message ChunkSummary {
+  string chunk_id       = 1;
+  repeated string heading_path = 2;
+  string content_preview = 3;   // 200 ký tự đầu
+  int32  content_length  = 4;
+  int32  page_number     = 5;   // 0 = không có page
+  bool   has_images      = 6;
+}
+
+message ProcessDocumentResponse {
+  string document_id       = 1;
+  string document_name     = 2;
+  string doc_type          = 3;  // "pdf" | "docx" | "pptx" | "markdown"
+  int32  chunk_count       = 4;
+  repeated ChunkSummary chunks = 5;
+  string storage_key       = 6;  // MinIO object key của raw file
+  float  processing_time_ms = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+message SearchRequest {
+  string query           = 1;
+  int32  top_k           = 2;  // default 10, max 100
+  float  score_threshold = 3;  // 0.0–1.0, default 0.0
+
+  // Filters — tất cả optional, để trống = không lọc
+  repeated string doc_types    = 4;  // "pdf", "docx", ...
+  repeated string document_ids = 5;
+  string language              = 6;
+}
+
+message SearchResultItem {
+  string chunk_id       = 1;
+  string document_id    = 2;
+  string document_name  = 3;
+  string doc_type       = 4;
+  repeated string heading_path = 5;
+  string content        = 6;
+  float  score          = 7;
+  int32  rank           = 8;
+  int32  page_number    = 9;
+}
+
+message SearchResponse {
+  string query       = 1;
+  repeated SearchResultItem results = 2;
+  int32  total_found = 3;
+  float  search_time_ms = 4;
+}
+
+// ---------------------------------------------------------------------------
+// DeleteDocument
+// ---------------------------------------------------------------------------
+
+message DeleteDocumentRequest {
+  string document_id = 1;
+}
+
+message DeleteDocumentResponse {
+  bool   success = 1;
+  string message = 2;  // Human-readable status
+}
+
+// ---------------------------------------------------------------------------
+// HealthCheck
+// ---------------------------------------------------------------------------
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status  = 1;  // "ok" | "degraded"
+  string version = 2;
+}

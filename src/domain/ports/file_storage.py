@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+from src.shared.result import Result
+
 
 class IFileStorage(ABC):
     """
@@ -9,20 +11,20 @@ class IFileStorage(ABC):
     """
 
     @abstractmethod
-    def upload(self, local_path: Path, remote_key: str) -> str:
+    def upload(self, local_path: Path, remote_key: str) -> Result[str, Exception]:
         """
         Upload file lên storage.
-        Trả về URL hoặc remote_key để truy cập sau.
+        Trả về Ok(remote_key) hoặc Err(exception).
         """
         ...
 
     @abstractmethod
-    def download(self, remote_key: str, local_path: Path) -> None:
+    def download(self, remote_key: str, local_path: Path) -> Result[None, Exception]:
         """Download file từ storage về local_path."""
         ...
 
     @abstractmethod
-    def delete(self, remote_key: str) -> None:
+    def delete(self, remote_key: str) -> Result[None, Exception]:
         """Xóa file trên storage."""
         ...
 
@@ -32,7 +34,7 @@ class IFileStorage(ABC):
         ...
 
     @abstractmethod
-    def get_url(self, remote_key: str, expires_in: int = 3600) -> str:
+    def get_url(self, remote_key: str, expires_in: int = 3600) -> Result[str, Exception]:
         """
         Tạo presigned URL để truy cập file.
         expires_in: seconds.
