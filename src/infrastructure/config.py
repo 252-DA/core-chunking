@@ -51,9 +51,18 @@ class ParserConfig(BaseSettings):
     pdf_dpi: int = 150
     pdf_max_pages: int | None = None  # None = không giới hạn
 
+    # PPTX
+    pptx_include_notes: bool = True   # include speaker notes vào content
+
     # OCR
     ocr_enabled: bool = True
     ocr_languages: list[str] = Field(default=["vi", "en"])
+
+    # Docling PDF parser
+    docling_do_table_structure: bool = True
+    docling_do_ocr: bool = True              # auto-detect: True + force_full_page_ocr=False
+    docling_do_picture_description: bool = False   # requires VLM; off by default
+    docling_picture_description_backend: str = "granite"  # or "openai_api"
 
     model_config = SettingsConfigDict(env_prefix="PARSER_")
 
@@ -72,6 +81,10 @@ class EmbedderConfig(BaseSettings):
     # BGE
     bge_model: str = "BAAI/bge-m3"
     bge_use_fp16: bool = True
+
+    # Common
+    batch_size: int = 32
+    max_length: int = 8192
 
     # OpenAI
     openai_api_key: str | None = None
