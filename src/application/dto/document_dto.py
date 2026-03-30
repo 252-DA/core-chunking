@@ -12,6 +12,7 @@ class ProcessDocumentRequest(BaseModel):
     """
     file_path: Path
     document_id: str | None = None          # None → auto-generate UUID
+    original_file_name: str | None = None   # Tên file gốc từ client (không phải temp file)
     doc_type: DocumentType | None = None    # None → detect từ extension
     language: str | None = None             # None → auto-detect
     metadata: dict = Field(default_factory=dict)

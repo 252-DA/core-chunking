@@ -219,6 +219,8 @@ class HeadingChunker(IChunker):
         chunk_index: int,
     ) -> Chunk:
         enriched = self._enrich_content(content, heading_path)
+        course_id = self._metadata_value(doc.metadata, "course_id")
+        owner_id = self._metadata_value(doc.metadata, "owner_id")
         return Chunk(
             id=str(uuid.uuid4()),
             content=content,
@@ -231,6 +233,8 @@ class HeadingChunker(IChunker):
                 heading_level=heading_level,
                 page_number=page_number,
                 language=doc.language,
+                course_id=course_id,
+                owner_id=owner_id,
             ),
             images=images,
             enriched_content=enriched,
@@ -303,6 +307,8 @@ class HeadingChunker(IChunker):
                             heading_level=current.metadata.heading_level,
                             page_number=current.metadata.page_number,
                             language=current.metadata.language,
+                            course_id=current.metadata.course_id,
+                            owner_id=current.metadata.owner_id,
                         ),
                         images=current.images + next_chunk.images,
                         enriched_content=self._enrich_content(
@@ -329,6 +335,8 @@ class HeadingChunker(IChunker):
                     heading_level=c.metadata.heading_level,
                     page_number=c.metadata.page_number,
                     language=c.metadata.language,
+                    course_id=c.metadata.course_id,
+                    owner_id=c.metadata.owner_id,
                 ),
                 images=c.images,
                 enriched_content=c.enriched_content,
@@ -346,3 +354,10 @@ class HeadingChunker(IChunker):
             return content
         heading_context = " > ".join(heading_path)
         return f"{heading_context}\n\n{content}"
+
+    def _metadata_value(self, metadata: dict, key: str) -> str | None:
+        value = metadata.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None

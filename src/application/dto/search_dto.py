@@ -15,6 +15,8 @@ class SearchRequest(BaseModel):
     doc_types: list[DocumentType] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)
     language: str | None = None
+    course_id: str | None = None
+    owner_id: str | None = None
 
     @field_validator("query")
     @classmethod

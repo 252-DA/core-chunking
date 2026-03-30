@@ -15,6 +15,8 @@ from functools import cached_property, lru_cache
 from src.domain.ports.chunker import IChunker
 from src.domain.ports.embedder import IEmbedder
 from src.domain.ports.file_storage import IFileStorage
+from src.domain.ports.graph_store import IGraphStore
+from src.domain.ports.metadata_store import IMetadataStore
 from src.domain.ports.parser import IParser
 from src.domain.ports.vector_store import IVectorStore
 from src.infrastructure.config import Settings, get_settings
@@ -61,9 +63,20 @@ class Container:
         return PptxParser(self._settings.parser)
 
     @cached_property
+    def markdown_parser(self) -> IParser:
+        from src.adapters.parsers.markdown_parser import MarkdownParser
+        logger.debug("container.init", component="MarkdownParser")
+        return MarkdownParser(self._settings.parser)
+
+    @cached_property
     def parsers(self) -> list[IParser]:
         """Tất cả parsers — dùng để resolve parser theo doc_type."""
-        return [self.pdf_parser, self.docx_parser, self.pptx_parser]
+        return [
+            self.pdf_parser,
+            self.docx_parser,
+            self.pptx_parser,
+            self.markdown_parser,
+        ]
 
     # ------------------------------------------------------------------
     # Chunker
@@ -105,6 +118,38 @@ class Container:
         return QdrantAdapter(self._settings.qdrant)
 
     # ------------------------------------------------------------------
+    # Metadata Store (PostgreSQL)
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def metadata_store(self) -> IMetadataStore:
+        if not self._settings.sql.enabled:
+            from src.adapters.metadata.noop_metadata_store import NoopMetadataStore
+            logger.warning("container.init", component="NoopMetadataStore", reason="sql.disabled")
+            return NoopMetadataStore()
+
+        from src.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+
+        logger.debug("container.init", component="PostgresMetadataStore")
+        return PostgresMetadataStore(self._settings.sql, self._settings.outbox)
+
+    # ------------------------------------------------------------------
+    # Graph Store (Neo4j)
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def graph_store(self) -> IGraphStore:
+        if not self._settings.neo4j.enabled:
+            from src.adapters.graph.noop_graph_store import NoopGraphStore
+            logger.warning("container.init", component="NoopGraphStore", reason="neo4j.disabled")
+            return NoopGraphStore()
+
+        from src.adapters.graph.neo4j_graph_store import Neo4jGraphStore
+
+        logger.debug("container.init", component="Neo4jGraphStore")
+        return Neo4jGraphStore(self._settings.neo4j)
+
+    # ------------------------------------------------------------------
     # File Storage
     # ------------------------------------------------------------------
 
@@ -128,6 +173,8 @@ class Container:
             embedder=self.embedder,
             vector_store=self.vector_store,
             file_storage=self.file_storage,
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
         )
 
     @cached_property
@@ -137,6 +184,16 @@ class Container:
         return SearchChunksUseCase(
             embedder=self.embedder,
             vector_store=self.vector_store,
+        )
+
+    @cached_property
+    def outbox_projector(self):
+        from src.application.services.outbox_projector import OutboxProjector
+
+        logger.debug("container.init", component="OutboxProjector")
+        return OutboxProjector(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
         )
 
 

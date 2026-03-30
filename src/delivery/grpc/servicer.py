@@ -77,6 +77,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                 dto = ProcessDocumentRequest(
                     file_path=tmp_path,
                     document_id=request.document_id or None,
+                    original_file_name=request.file_name or None,
                     language=request.language or None,
                     metadata=dict(request.metadata),
                 )

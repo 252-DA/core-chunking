@@ -32,6 +32,8 @@ tracer = get_tracer(__name__)
 _F_CHUNK_ID       = "chunk_id"
 _F_DOCUMENT_ID    = "document_id"
 _F_DOCUMENT_NAME  = "document_name"
+_F_COURSE_ID      = "course_id"
+_F_OWNER_ID       = "owner_id"
 _F_DOC_TYPE       = "doc_type"
 _F_CHUNK_INDEX    = "chunk_index"
 _F_HEADING_PATH   = "heading_path"
@@ -218,7 +220,7 @@ class QdrantAdapter(IVectorStore):
                 ),
             )
             # Index các payload fields hay filter
-            for field in [_F_DOCUMENT_ID, _F_DOC_TYPE, _F_LANGUAGE]:
+            for field in [_F_DOCUMENT_ID, _F_DOC_TYPE, _F_LANGUAGE, _F_COURSE_ID, _F_OWNER_ID]:
                 client.create_payload_index(
                     collection_name=name,
                     field_name=field,
@@ -238,6 +240,8 @@ class QdrantAdapter(IVectorStore):
             _F_CHUNK_ID:      chunk.id,
             _F_DOCUMENT_ID:   chunk.metadata.document_id,
             _F_DOCUMENT_NAME: chunk.metadata.document_name,
+            _F_COURSE_ID:     chunk.metadata.course_id,
+            _F_OWNER_ID:      chunk.metadata.owner_id,
             _F_DOC_TYPE:      chunk.metadata.doc_type.value,
             _F_CHUNK_INDEX:   chunk.metadata.chunk_index,
             _F_HEADING_PATH:  list(chunk.metadata.heading_path),
@@ -260,6 +264,8 @@ class QdrantAdapter(IVectorStore):
             heading_level=payload.get(_F_HEADING_LEVEL, 0),
             page_number=payload.get(_F_PAGE_NUMBER),
             language=payload.get(_F_LANGUAGE),
+            course_id=payload.get(_F_COURSE_ID),
+            owner_id=payload.get(_F_OWNER_ID),
         )
         return Chunk(
             id=payload[_F_CHUNK_ID],
@@ -295,6 +301,18 @@ class QdrantAdapter(IVectorStore):
             conditions.append(qmodels.FieldCondition(
                 key=_F_LANGUAGE,
                 match=qmodels.MatchValue(value=filters.language),
+            ))
+
+        if filters.course_id:
+            conditions.append(qmodels.FieldCondition(
+                key=_F_COURSE_ID,
+                match=qmodels.MatchValue(value=filters.course_id),
+            ))
+
+        if filters.owner_id:
+            conditions.append(qmodels.FieldCondition(
+                key=_F_OWNER_ID,
+                match=qmodels.MatchValue(value=filters.owner_id),
             ))
 
         if not conditions:

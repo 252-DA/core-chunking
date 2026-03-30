@@ -46,6 +46,34 @@ class MinioConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MINIO_")
 
 
+class SqlConfig(BaseSettings):
+    enabled: bool = False
+    dsn: str = "postgresql://postgres:postgres@localhost:5432/chunking"
+    pool_size: int = 5
+    connect_timeout_seconds: int = 10
+
+    model_config = SettingsConfigDict(env_prefix="SQL_")
+
+
+class Neo4jConfig(BaseSettings):
+    enabled: bool = False
+    uri: str = "bolt://localhost:7687"
+    username: str = "neo4j"
+    password: str = "neo4j"
+    database: str = "neo4j"
+
+    model_config = SettingsConfigDict(env_prefix="NEO4J_")
+
+
+class OutboxConfig(BaseSettings):
+    enabled: bool = True
+    poll_interval_seconds: int = 5
+    batch_size: int = 100
+    max_attempts: int = 10
+
+    model_config = SettingsConfigDict(env_prefix="OUTBOX_")
+
+
 class ParserConfig(BaseSettings):
     # PDF
     pdf_dpi: int = 150
@@ -117,6 +145,9 @@ class Settings(BaseSettings):
     grpc: GrpcConfig = Field(default_factory=GrpcConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     minio: MinioConfig = Field(default_factory=MinioConfig)
+    sql: SqlConfig = Field(default_factory=SqlConfig)
+    neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
+    outbox: OutboxConfig = Field(default_factory=OutboxConfig)
     parser: ParserConfig = Field(default_factory=ParserConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)

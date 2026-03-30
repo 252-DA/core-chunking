@@ -15,6 +15,8 @@ class SearchFilter:
     doc_types: tuple[DocumentType, ...] = ()     # [] = không filter
     document_ids: tuple[str, ...] = ()           # filter theo document cụ thể
     language: str | None = None                  # "vi", "en", None = all
+    course_id: str | None = None
+    owner_id: str | None = None
     uploaded_after: datetime | None = None
     uploaded_before: datetime | None = None
     heading_path_contains: str | None = None     # tìm trong heading path

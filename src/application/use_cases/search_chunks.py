@@ -46,6 +46,8 @@ class SearchChunksUseCase:
                 doc_types=tuple(request.doc_types),
                 document_ids=tuple(request.document_ids),
                 language=request.language,
+                course_id=request.course_id,
+                owner_id=request.owner_id,
             )
 
             # 3. Search vector store
@@ -101,6 +103,8 @@ class SearchChunksUseCase:
             filters.doc_types
             or filters.document_ids
             or filters.language
+            or filters.course_id
+            or filters.owner_id
             or filters.uploaded_after
             or filters.uploaded_before
         )

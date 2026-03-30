@@ -17,6 +17,8 @@ class ChunkMetadata:
     heading_level: int = 0                # level của heading trực tiếp chứa chunk
     page_number: int | None = None        # trang bắt đầu của chunk
     language: str | None = None
+    course_id: str | None = None
+    owner_id: str | None = None
 
 
 @dataclass
