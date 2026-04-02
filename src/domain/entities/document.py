@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -31,11 +31,11 @@ class Document:
     """
     id: str
     name: str
-    path: Path
+    path: Path | None
     doc_type: DocumentType
     size_bytes: int
     mime_type: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass(frozen=True)

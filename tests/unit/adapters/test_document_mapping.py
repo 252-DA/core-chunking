@@ -1,0 +1,25 @@
+from datetime import datetime, timezone
+
+from src.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+from src.domain.entities.document import DocumentType
+from src.infrastructure.config import OutboxConfig, SqlConfig
+
+
+class TestDocumentMapping:
+    def test_row_to_document_reconstructs_without_fake_path(self):
+        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+
+        document = store._row_to_document(
+            (
+                "doc-001",
+                "lesson.pdf",
+                DocumentType.PDF.value,
+                "application/pdf",
+                123,
+                datetime.now(timezone.utc),
+            )
+        )
+
+        assert document.id == "doc-001"
+        assert document.name == "lesson.pdf"
+        assert document.path is None
