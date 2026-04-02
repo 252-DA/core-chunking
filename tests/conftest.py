@@ -10,6 +10,7 @@ from src.domain.entities.chunk import Chunk, ChunkMetadata
 from src.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
 from src.domain.entities.embedding import Embedding
 from src.domain.entities.search import SearchResult
+from src.domain.ports.metadata_store import StoredChunkMetadata, StoredDocumentContext
 from src.infrastructure.config import ChunkerConfig, QdrantConfig
 from src.shared.result import Ok
 
@@ -113,6 +114,30 @@ def sample_search_result(sample_chunk: Chunk) -> SearchResult:
     return SearchResult(chunk=sample_chunk, score=0.95, rank=1)
 
 
+@pytest.fixture
+def sample_stored_chunk_metadata(sample_chunk: Chunk) -> StoredChunkMetadata:
+    return StoredChunkMetadata(
+        chunk_id=sample_chunk.id,
+        document_id=sample_chunk.metadata.document_id,
+        chunk_index=sample_chunk.metadata.chunk_index,
+        heading_path=sample_chunk.metadata.heading_path,
+        heading_level=sample_chunk.metadata.heading_level,
+        page_number=sample_chunk.metadata.page_number,
+        content_length=len(sample_chunk.content),
+        language=sample_chunk.metadata.language,
+    )
+
+
+@pytest.fixture
+def sample_document_context(sample_document: Document) -> StoredDocumentContext:
+    return StoredDocumentContext(
+        document_id=sample_document.id,
+        course_id="course-001",
+        owner_id="owner-001",
+        language="en",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config stubs
 # ---------------------------------------------------------------------------
@@ -179,3 +204,46 @@ def mock_chunker(sample_chunk: Chunk) -> MagicMock:
     chunker = MagicMock()
     chunker.chunk.return_value = Ok([sample_chunk])
     return chunker
+
+
+@pytest.fixture
+def mock_metadata_store(
+    sample_document: Document,
+    sample_stored_chunk_metadata: StoredChunkMetadata,
+    sample_document_context: StoredDocumentContext,
+) -> MagicMock:
+    store = MagicMock()
+    store.upsert_document.return_value = Ok(None)
+    store.update_document_status.return_value = Ok(None)
+    store.upsert_chunks.return_value = Ok(None)
+    store.upsert_chunks_with_outbox.return_value = Ok("event-001")
+    store.get_document_context.return_value = Ok(sample_document_context)
+    store.list_chunks.return_value = Ok([sample_stored_chunk_metadata])
+    store.upsert_concepts.return_value = Ok(None)
+    store.upsert_chunk_concepts.return_value = Ok(None)
+    store.append_outbox_event.return_value = Ok("event-001")
+    store.fetch_pending_outbox.return_value = Ok([])
+    store.mark_outbox_done.return_value = Ok(None)
+    store.mark_outbox_failed.return_value = Ok(None)
+    store.get.return_value = Ok(sample_document)
+    store.list.return_value = Ok([sample_document])
+    store.delete.return_value = Ok(None)
+    store.get_document_status.return_value = Ok(None)
+    return store
+
+
+@pytest.fixture
+def mock_graph_store() -> MagicMock:
+    store = MagicMock()
+    store.upsert_heading_graph.return_value = Ok(None)
+    store.upsert_concept_graph.return_value = Ok(None)
+    store.delete_document.return_value = Ok(None)
+    return store
+
+
+@pytest.fixture
+def mock_job_queue() -> MagicMock:
+    queue = MagicMock()
+    queue.enqueue.return_value = Ok("job-001")
+    queue.enqueue_enrichment.return_value = Ok("enrichment-job-001")
+    return queue

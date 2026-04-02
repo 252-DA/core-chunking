@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from src.domain.entities.document import Document, DocumentType
@@ -14,22 +14,18 @@ class IngestionStatus(str, Enum):
     EMBEDDING = "EMBEDDING"
     UPSERTING = "UPSERTING"
     DONE = "DONE"
+    ENRICHING = "ENRICHING"
+    ENRICHED = "ENRICHED"
     ERROR = "ERROR"
 
 
+@dataclass(frozen=True)
 class DocumentFilter:
     """Filter params cho metadata queries."""
-    def __init__(
-        self,
-        doc_types: list[DocumentType] | None = None,
-        language: str | None = None,
-        uploaded_after: datetime | None = None,
-        uploaded_before: datetime | None = None,
-    ) -> None:
-        self.doc_types = doc_types
-        self.language = language
-        self.uploaded_after = uploaded_after
-        self.uploaded_before = uploaded_before
+    doc_types: tuple[DocumentType, ...] = ()
+    language: str | None = None
+    uploaded_after: datetime | None = None
+    uploaded_before: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +41,33 @@ class StoredChunkMetadata:
 
 
 @dataclass(frozen=True)
+class StoredDocumentContext:
+    document_id: str
+    course_id: str | None = None
+    owner_id: str | None = None
+    language: str | None = None
+
+
+@dataclass(frozen=True)
+class StoredConcept:
+    concept_id: str
+    name: str
+    canonical_name: str
+    slug: str
+    category: str = "other"
+    language: str | None = None
+    domain: str | None = None
+
+
+@dataclass(frozen=True)
+class StoredChunkConcept:
+    chunk_id: str
+    concept_id: str
+    confidence: float = 1.0
+    source: str = "heading"
+
+
+@dataclass(frozen=True)
 class OutboxEvent:
     id: str
     event_type: str
@@ -53,8 +76,8 @@ class OutboxEvent:
     status: str = "PENDING"
     attempts: int = 0
     error_msg: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class IMetadataStore(ABC):
@@ -89,6 +112,49 @@ class IMetadataStore(ABC):
         chunks: list[StoredChunkMetadata],
     ) -> Result[None, Exception]:
         """Bulk upsert chunk metadata."""
+        ...
+
+    @abstractmethod
+    def upsert_chunks_with_outbox(
+        self,
+        chunks: list[StoredChunkMetadata],
+        event_type: str,
+        aggregate_id: str,
+        payload: dict,
+    ) -> Result[str, Exception]:
+        """Bulk upsert chunk metadata and append one outbox event in the same transaction."""
+        ...
+
+    @abstractmethod
+    def get_document_context(
+        self,
+        document_id: str,
+    ) -> Result[StoredDocumentContext | None, Exception]:
+        """Lấy context document phục vụ enrichment."""
+        ...
+
+    @abstractmethod
+    def list_chunks(
+        self,
+        document_id: str,
+    ) -> Result[list[StoredChunkMetadata], Exception]:
+        """Lấy chunks đã persist theo document_id, sort theo chunk_index."""
+        ...
+
+    @abstractmethod
+    def upsert_concepts(
+        self,
+        concepts: list[StoredConcept],
+    ) -> Result[None, Exception]:
+        """Bulk upsert concepts."""
+        ...
+
+    @abstractmethod
+    def upsert_chunk_concepts(
+        self,
+        chunk_concepts: list[StoredChunkConcept],
+    ) -> Result[None, Exception]:
+        """Bulk upsert chunk-concept mentions."""
         ...
 
     @abstractmethod
@@ -131,5 +197,15 @@ class IMetadataStore(ABC):
 
     @abstractmethod
     def delete(self, document_id: str) -> Result[None, Exception]:
-        """Xóa document metadata + chunks + outbox liên quan."""
+        """Xóa document metadata/chunks và append cleanup outbox event trong cùng transaction."""
+        ...
+
+    @abstractmethod
+    def get_document_status(
+        self, document_id: str
+    ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
+        """
+        Trả về (status, error_msg, storage_key) của document, hoặc None nếu không tìm thấy.
+        error_msg chỉ có giá trị khi status == ERROR.
+        """
         ...
