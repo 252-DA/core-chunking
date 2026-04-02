@@ -18,10 +18,10 @@ from src.domain.entities.chunk import Chunk, ChunkMetadata
 from src.domain.entities.document import DocumentType
 from src.domain.entities.embedding import Embedding
 from src.domain.entities.search import SearchFilter, SearchResult
+from src.domain.exceptions import VectorStoreError
 from src.domain.ports.vector_store import IVectorStore
 from src.infrastructure.config import QdrantConfig
 from src.shared.logger import get_logger
-from src.shared.metrics import DOCUMENTS_PROCESSED
 from src.shared.result import Err, Ok, Result
 from src.shared.tracing import get_tracer
 
@@ -105,7 +105,7 @@ class QdrantAdapter(IVectorStore):
 
             except Exception as e:
                 logger.error("qdrant.upsert.failed", error=str(e))
-                return Err(e)
+                return Err(VectorStoreError("Qdrant upsert failed", cause=e))
 
     def search(
         self,
@@ -152,7 +152,7 @@ class QdrantAdapter(IVectorStore):
 
             except Exception as e:
                 logger.error("qdrant.search.failed", error=str(e))
-                return Err(e)
+                return Err(VectorStoreError("Qdrant search failed", cause=e))
 
     def delete(self, chunk_ids: list[str]) -> Result[None, Exception]:
         try:
@@ -167,7 +167,7 @@ class QdrantAdapter(IVectorStore):
             return Ok(None)
         except Exception as e:
             logger.error("qdrant.delete.failed", error=str(e))
-            return Err(e)
+            return Err(VectorStoreError("Qdrant delete failed", cause=e))
 
     def delete_by_document(self, document_id: str) -> Result[None, Exception]:
         try:
@@ -189,7 +189,7 @@ class QdrantAdapter(IVectorStore):
             return Ok(None)
         except Exception as e:
             logger.error("qdrant.delete_by_document.failed", error=str(e))
-            return Err(e)
+            return Err(VectorStoreError("Qdrant delete_by_document failed", cause=e))
 
     def count(self) -> Result[int, Exception]:
         try:
@@ -200,7 +200,7 @@ class QdrantAdapter(IVectorStore):
             return Ok(result.count)
         except Exception as e:
             logger.error("qdrant.count.failed", error=str(e))
-            return Err(e)
+            return Err(VectorStoreError("Qdrant count failed", cause=e))
 
     # ------------------------------------------------------------------
     # Collection management

@@ -14,6 +14,7 @@ from pathlib import Path
 from minio import Minio
 from minio.error import S3Error
 
+from src.domain.exceptions import FileStorageError
 from src.domain.ports.file_storage import IFileStorage
 from src.infrastructure.config import MinioConfig
 from src.shared.logger import get_logger
@@ -69,7 +70,7 @@ class MinioAdapter(IFileStorage):
 
             except Exception as e:
                 logger.error("minio.upload.failed", key=remote_key, error=str(e))
-                return Err(e)
+                return Err(FileStorageError(f"MinIO upload failed for key '{remote_key}'", cause=e))
 
     def download(self, remote_key: str, local_path: Path) -> Result[None, Exception]:
         with tracer.start_as_current_span("minio.download") as span:
@@ -86,7 +87,7 @@ class MinioAdapter(IFileStorage):
 
             except Exception as e:
                 logger.error("minio.download.failed", key=remote_key, error=str(e))
-                return Err(e)
+                return Err(FileStorageError(f"MinIO download failed for key '{remote_key}'", cause=e))
 
     def delete(self, remote_key: str) -> Result[None, Exception]:
         try:
@@ -99,7 +100,7 @@ class MinioAdapter(IFileStorage):
 
         except Exception as e:
             logger.error("minio.delete.failed", key=remote_key, error=str(e))
-            return Err(e)
+            return Err(FileStorageError(f"MinIO delete failed for key '{remote_key}'", cause=e))
 
     def exists(self, remote_key: str) -> bool:
         try:
@@ -125,7 +126,7 @@ class MinioAdapter(IFileStorage):
 
         except Exception as e:
             logger.error("minio.get_url.failed", key=remote_key, error=str(e))
-            return Err(e)
+            return Err(FileStorageError(f"MinIO get_url failed for key '{remote_key}'", cause=e))
 
     # ------------------------------------------------------------------
     # Bucket management
