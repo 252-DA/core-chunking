@@ -23,9 +23,13 @@ dependencies = [
     "qdrant-client>=1.9.0",
     # Metadata DB + Graph DB
     "psycopg[binary]>=3.2.0",
+    "psycopg-pool>=3.2.0",
     "neo4j>=5.28.0",
     # Object storage
     "minio>=7.2.0",
+    # Job queue
+    "bullmq>=2.0.0",
+    "redis>=5.0.0",
     # gRPC
     "grpcio>=1.63.0",
     "grpcio-tools>=1.63.0",
