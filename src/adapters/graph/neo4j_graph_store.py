@@ -1,11 +1,20 @@
 from functools import cached_property
 
-from src.domain.ports.graph_store import GraphChunk, IGraphStore
+from src.domain.exceptions import GraphStoreError
+from src.domain.ports.graph_store import (
+    GraphChunk,
+    GraphChunkConcept,
+    GraphConcept,
+    GraphDocument,
+    IGraphStore,
+)
 from src.infrastructure.config import Neo4jConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 class Neo4jGraphStore(IGraphStore):
@@ -24,70 +33,155 @@ class Neo4jGraphStore(IGraphStore):
             auth=(self._config.username, self._config.password),
         )
 
+    def close(self) -> None:
+        driver = self.__dict__.get("_driver")
+        if driver is None:
+            return
+
+        driver.close()
+        logger.info("neo4j_graph_store.closed")
+
     def upsert_heading_graph(
         self,
-        document_id: str,
+        document: GraphDocument,
         course_id: str | None,
         owner_id: str | None,
         chunks: list[GraphChunk],
     ) -> Result[None, Exception]:
-        try:
-            ordered = sorted(chunks, key=lambda c: c.chunk_index)
-            with self._driver.session(database=self._config.database) as session:
-                session.execute_write(self._merge_document, document_id, course_id, owner_id)
-
-                prev_chunk_id: str | None = None
-                for chunk in ordered:
+        with tracer.start_as_current_span("neo4j.upsert_heading_graph") as span:
+            span.set_attribute("document.id", document.document_id)
+            span.set_attribute("chunks.count", len(chunks))
+            try:
+                ordered = sorted(chunks, key=lambda c: c.chunk_index)
+                projection = self._build_heading_projection(document.document_id, ordered)
+                with self._driver.session(database=self._config.database) as session:
                     session.execute_write(
-                        self._merge_chunk,
-                        document_id,
-                        chunk.chunk_id,
-                        chunk.chunk_index,
+                        self._merge_heading_graph,
+                        {
+                            "id": document.document_id,
+                            "name": document.document_name,
+                            "doc_type": document.doc_type.value,
+                        },
+                        course_id,
+                        owner_id,
+                        projection["chunks"],
+                        projection["headings"],
+                        projection["root_heading_edges"],
+                        projection["subheading_edges"],
+                        projection["heading_chunk_edges"],
+                        projection["next_edges"],
                     )
-                    session.execute_write(
-                        self._merge_heading_path,
-                        document_id,
-                        chunk.chunk_id,
-                        list(chunk.heading_path),
-                    )
-                    if prev_chunk_id is not None:
-                        session.execute_write(self._merge_next_edge, prev_chunk_id, chunk.chunk_id)
-                    prev_chunk_id = chunk.chunk_id
 
-            return Ok(None)
-        except Exception as exc:
-            logger.error("neo4j_graph_store.upsert_failed", document_id=document_id, error=str(exc))
-            return Err(exc)
+                return Ok(None)
+            except Exception as exc:
+                logger.error(
+                    "neo4j_graph_store.upsert_failed",
+                    document_id=document.document_id,
+                    error=str(exc),
+                )
+                return Err(GraphStoreError("Neo4j graph store operation failed", cause=exc))
+
+    def upsert_concept_graph(
+        self,
+        document_id: str,
+        concepts: list[GraphConcept],
+        mentions: list[GraphChunkConcept],
+    ) -> Result[None, Exception]:
+        with tracer.start_as_current_span("neo4j.upsert_concept_graph") as span:
+            span.set_attribute("document.id", document_id)
+            span.set_attribute("concepts.count", len(concepts))
+            span.set_attribute("mentions.count", len(mentions))
+            try:
+                with self._driver.session(database=self._config.database) as session:
+                    chunk_ids = sorted({mention.chunk_id for mention in mentions})
+                    if chunk_ids:
+                        existing_count = session.execute_read(self._count_chunks, chunk_ids)
+                        if existing_count != len(chunk_ids):
+                            raise ValueError(
+                                "Cannot project concept graph before chunk nodes exist "
+                                f"for document {document_id}"
+                            )
+
+                    if concepts:
+                        session.execute_write(
+                            self._merge_concepts,
+                            [
+                                {
+                                    "id": concept.concept_id,
+                                    "name": concept.name,
+                                    "canonical_name": concept.canonical_name,
+                                    "slug": concept.slug,
+                                    "category": concept.category,
+                                    "language": concept.language,
+                                    "domain": concept.domain,
+                                }
+                                for concept in concepts
+                            ],
+                        )
+
+                    if mentions:
+                        session.execute_write(
+                            self._merge_mentions,
+                            [
+                                {
+                                    "chunk_id": mention.chunk_id,
+                                    "concept_id": mention.concept_id,
+                                    "confidence": mention.confidence,
+                                    "source": mention.source,
+                                }
+                                for mention in mentions
+                            ],
+                        )
+
+                return Ok(None)
+            except Exception as exc:
+                logger.error(
+                    "neo4j_graph_store.upsert_concept_failed",
+                    document_id=document_id,
+                    error=str(exc),
+                )
+                return Err(GraphStoreError("Neo4j graph store operation failed", cause=exc))
 
     def delete_document(self, document_id: str) -> Result[None, Exception]:
-        try:
-            with self._driver.session(database=self._config.database) as session:
-                session.run(
-                    """
-                    MATCH (d:Document {id: $document_id})
-                    OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
-                    DETACH DELETE c
-                    WITH d
-                    OPTIONAL MATCH (d)-[:HAS_HEADING]->(h:Heading)
-                    DETACH DELETE h
-                    WITH d
-                    DETACH DELETE d
-                    """,
-                    document_id=document_id,
-                )
-            return Ok(None)
-        except Exception as exc:
-            logger.error("neo4j_graph_store.delete_failed", document_id=document_id, error=str(exc))
-            return Err(exc)
+        with tracer.start_as_current_span("neo4j.delete_document") as span:
+            span.set_attribute("document.id", document_id)
+            try:
+                with self._driver.session(database=self._config.database) as session:
+                    session.run(
+                        """
+                        MATCH (d:Document {id: $document_id})
+                        OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+                        WITH d, collect(DISTINCT c) AS chunk_nodes
+                        FOREACH (chunk IN chunk_nodes | DETACH DELETE chunk)
+                        WITH d
+                        OPTIONAL MATCH (d)-[:HAS_HEADING]->(h:Heading)
+                        OPTIONAL MATCH (h)-[:HAS_SUBHEADING*0..]->(sub:Heading)
+                        WITH d, collect(DISTINCT sub) AS heading_nodes
+                        FOREACH (heading IN heading_nodes | DETACH DELETE heading)
+                        WITH d
+                        DETACH DELETE d
+                        """,
+                        document_id=document_id,
+                    )
+                return Ok(None)
+            except Exception as exc:
+                logger.error("neo4j_graph_store.delete_failed", document_id=document_id, error=str(exc))
+                return Err(GraphStoreError("Neo4j graph store operation failed", cause=exc))
 
     @staticmethod
-    def _merge_document(tx, document_id: str, course_id: str | None, owner_id: str | None) -> None:
+    def _merge_document(tx, document: dict, course_id: str | None, owner_id: str | None) -> None:
+        document_id = document["id"]
         tx.run(
             """
             MERGE (d:Document {id: $document_id})
-            SET d.updated_at = datetime()
+            ON CREATE SET d.created_at = datetime()
+            SET d.name = $document_name,
+                d.doc_type = $doc_type,
+                d.updated_at = datetime()
             """,
-            document_id=document_id,
+            document_id=document["id"],
+            document_name=document["name"],
+            doc_type=document["doc_type"],
         )
 
         if course_id:
@@ -111,6 +205,166 @@ class Neo4jGraphStore(IGraphStore):
                 owner_id=owner_id,
                 document_id=document_id,
             )
+
+    @staticmethod
+    def _build_heading_projection(document_id: str, chunks: list[GraphChunk]) -> dict[str, list[dict]]:
+        chunk_rows = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "chunk_index": chunk.chunk_index,
+                "page_number": chunk.page_number,
+                "language": chunk.language,
+            }
+            for chunk in chunks
+        ]
+
+        next_edges = [
+            {
+                "previous_chunk_id": previous.chunk_id,
+                "next_chunk_id": current.chunk_id,
+            }
+            for previous, current in zip(chunks, chunks[1:])
+        ]
+
+        headings_by_id: dict[str, dict] = {}
+        root_heading_ids: set[str] = set()
+        subheading_edges: set[tuple[str, str]] = set()
+        heading_chunk_edges: set[tuple[str, str]] = set()
+
+        for chunk in chunks:
+            if not chunk.heading_path:
+                continue
+
+            parent_heading_id: str | None = None
+            for level, title in enumerate(chunk.heading_path, start=1):
+                heading_id = f"{document_id}:{level}:{' > '.join(chunk.heading_path[:level])}"
+                headings_by_id.setdefault(
+                    heading_id,
+                    {
+                        "id": heading_id,
+                        "level": level,
+                        "title": title,
+                    },
+                )
+
+                if parent_heading_id is None:
+                    root_heading_ids.add(heading_id)
+                else:
+                    subheading_edges.add((parent_heading_id, heading_id))
+
+                parent_heading_id = heading_id
+
+            if parent_heading_id is not None:
+                heading_chunk_edges.add((parent_heading_id, chunk.chunk_id))
+
+        return {
+            "chunks": chunk_rows,
+            "headings": list(headings_by_id.values()),
+            "root_heading_edges": [{"heading_id": heading_id} for heading_id in sorted(root_heading_ids)],
+            "subheading_edges": [
+                {
+                    "parent_heading_id": parent_heading_id,
+                    "child_heading_id": child_heading_id,
+                }
+                for parent_heading_id, child_heading_id in sorted(subheading_edges)
+            ],
+            "heading_chunk_edges": [
+                {
+                    "heading_id": heading_id,
+                    "chunk_id": chunk_id,
+                }
+                for heading_id, chunk_id in sorted(heading_chunk_edges)
+            ],
+            "next_edges": next_edges,
+        }
+
+    @staticmethod
+    def _merge_heading_graph(
+        tx,
+        document: dict,
+        course_id: str | None,
+        owner_id: str | None,
+        chunks: list[dict],
+        headings: list[dict],
+        root_heading_edges: list[dict],
+        subheading_edges: list[dict],
+        heading_chunk_edges: list[dict],
+        next_edges: list[dict],
+    ) -> None:
+        document_id = document["id"]
+        Neo4jGraphStore._merge_document(tx, document, course_id, owner_id)
+
+        tx.run(
+            """
+            UNWIND $chunks AS chunk
+            MERGE (c:Chunk {id: chunk.chunk_id})
+            ON CREATE SET c.created_at = datetime()
+            SET c.document_id = $document_id,
+                c.chunk_index = chunk.chunk_index,
+                c.page_number = chunk.page_number,
+                c.language = chunk.language,
+                c.updated_at = datetime()
+            WITH c
+            MATCH (d:Document {id: $document_id})
+            MERGE (d)-[:HAS_CHUNK]->(c)
+            """,
+            document_id=document_id,
+            chunks=chunks,
+        )
+
+        tx.run(
+            """
+            UNWIND $headings AS heading
+            MERGE (h:Heading {id: heading.id})
+            SET h.document_id = $document_id,
+                h.level = heading.level,
+                h.title = heading.title,
+                h.updated_at = datetime()
+            """,
+            document_id=document_id,
+            headings=headings,
+        )
+
+        tx.run(
+            """
+            UNWIND $root_heading_edges AS edge
+            MATCH (d:Document {id: $document_id})
+            MATCH (h:Heading {id: edge.heading_id})
+            MERGE (d)-[:HAS_HEADING]->(h)
+            """,
+            document_id=document_id,
+            root_heading_edges=root_heading_edges,
+        )
+
+        tx.run(
+            """
+            UNWIND $subheading_edges AS edge
+            MATCH (parent:Heading {id: edge.parent_heading_id})
+            MATCH (child:Heading {id: edge.child_heading_id})
+            MERGE (parent)-[:HAS_SUBHEADING]->(child)
+            """,
+            subheading_edges=subheading_edges,
+        )
+
+        tx.run(
+            """
+            UNWIND $heading_chunk_edges AS edge
+            MATCH (h:Heading {id: edge.heading_id})
+            MATCH (c:Chunk {id: edge.chunk_id})
+            MERGE (h)-[:HAS_CHUNK]->(c)
+            """,
+            heading_chunk_edges=heading_chunk_edges,
+        )
+
+        tx.run(
+            """
+            UNWIND $next_edges AS edge
+            MATCH (a:Chunk {id: edge.previous_chunk_id})
+            MATCH (b:Chunk {id: edge.next_chunk_id})
+            MERGE (a)-[:NEXT]->(b)
+            """,
+            next_edges=next_edges,
+        )
 
     @staticmethod
     def _merge_chunk(tx, document_id: str, chunk_id: str, chunk_index: int) -> None:
@@ -196,4 +450,50 @@ class Neo4jGraphStore(IGraphStore):
             """,
             previous_chunk_id=previous_chunk_id,
             next_chunk_id=next_chunk_id,
+        )
+
+    @staticmethod
+    def _count_chunks(tx, chunk_ids: list[str]) -> int:
+        record = tx.run(
+            """
+            MATCH (c:Chunk)
+            WHERE c.id IN $chunk_ids
+            RETURN count(c) AS count
+            """,
+            chunk_ids=chunk_ids,
+        ).single()
+        return int(record["count"]) if record is not None else 0
+
+    @staticmethod
+    def _merge_concepts(tx, concepts: list[dict]) -> None:
+        tx.run(
+            """
+            UNWIND $concepts AS concept
+            MERGE (c:Concept {id: concept.id})
+            ON CREATE SET c.created_at = datetime()
+            SET c.name = concept.name,
+                c.canonical_name = concept.canonical_name,
+                c.slug = concept.slug,
+                c.category = concept.category,
+                c.language = concept.language,
+                c.domain = concept.domain,
+                c.updated_at = datetime()
+            """,
+            concepts=concepts,
+        )
+
+    @staticmethod
+    def _merge_mentions(tx, mentions: list[dict]) -> None:
+        tx.run(
+            """
+            UNWIND $mentions AS mention
+            MATCH (chunk:Chunk {id: mention.chunk_id})
+            MATCH (concept:Concept {id: mention.concept_id})
+            MERGE (chunk)-[r:MENTIONS]->(concept)
+            ON CREATE SET r.created_at = datetime()
+            SET r.confidence = mention.confidence,
+                r.source = mention.source,
+                r.updated_at = datetime()
+            """,
+            mentions=mentions,
         )
