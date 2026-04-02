@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from src.delivery.grpc.proto import chunking_pb2 as chunking__pb2
+import chunking_pb2 as chunking__pb2
 
 GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
@@ -43,6 +43,16 @@ class ChunkingServiceStub(object):
                 request_serializer=chunking__pb2.ProcessDocumentRequest.SerializeToString,
                 response_deserializer=chunking__pb2.ProcessDocumentResponse.FromString,
                 _registered_method=True)
+        self.EnqueueDocument = channel.unary_unary(
+                '/chunking.ChunkingService/EnqueueDocument',
+                request_serializer=chunking__pb2.ProcessDocumentRequest.SerializeToString,
+                response_deserializer=chunking__pb2.EnqueueDocumentResponse.FromString,
+                _registered_method=True)
+        self.GetDocumentStatus = channel.unary_unary(
+                '/chunking.ChunkingService/GetDocumentStatus',
+                request_serializer=chunking__pb2.GetDocumentStatusRequest.SerializeToString,
+                response_deserializer=chunking__pb2.GetDocumentStatusResponse.FromString,
+                _registered_method=True)
         self.Search = channel.unary_unary(
                 '/chunking.ChunkingService/Search',
                 request_serializer=chunking__pb2.SearchRequest.SerializeToString,
@@ -68,7 +78,21 @@ class ChunkingServiceServicer(object):
     """
 
     def ProcessDocument(self, request, context):
-        """Nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO
+        """Sync: nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO → trả kết quả ngay
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EnqueueDocument(self, request, context):
+        """Async: upload file → enqueue BullMQ job → trả về ngay với document_id
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDocumentStatus(self, request, context):
+        """Poll trạng thái job async
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -102,6 +126,16 @@ def add_ChunkingServiceServicer_to_server(servicer, server):
                     servicer.ProcessDocument,
                     request_deserializer=chunking__pb2.ProcessDocumentRequest.FromString,
                     response_serializer=chunking__pb2.ProcessDocumentResponse.SerializeToString,
+            ),
+            'EnqueueDocument': grpc.unary_unary_rpc_method_handler(
+                    servicer.EnqueueDocument,
+                    request_deserializer=chunking__pb2.ProcessDocumentRequest.FromString,
+                    response_serializer=chunking__pb2.EnqueueDocumentResponse.SerializeToString,
+            ),
+            'GetDocumentStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDocumentStatus,
+                    request_deserializer=chunking__pb2.GetDocumentStatusRequest.FromString,
+                    response_serializer=chunking__pb2.GetDocumentStatusResponse.SerializeToString,
             ),
             'Search': grpc.unary_unary_rpc_method_handler(
                     servicer.Search,
@@ -150,6 +184,60 @@ class ChunkingService(object):
             '/chunking.ChunkingService/ProcessDocument',
             chunking__pb2.ProcessDocumentRequest.SerializeToString,
             chunking__pb2.ProcessDocumentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EnqueueDocument(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/EnqueueDocument',
+            chunking__pb2.ProcessDocumentRequest.SerializeToString,
+            chunking__pb2.EnqueueDocumentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDocumentStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/GetDocumentStatus',
+            chunking__pb2.GetDocumentStatusRequest.SerializeToString,
+            chunking__pb2.GetDocumentStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
