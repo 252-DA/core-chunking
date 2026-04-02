@@ -1,9 +1,10 @@
 """
-ProcessDocumentUseCase — orchestrate toàn bộ pipeline xử lý document.
+ProcessDocumentUseCase — gRPC sync path: detect type → upload MinIO → run pipeline.
 
 Flow:
-  File → [detect type] → [upload MinIO] → [preprocessors] → [parse]
-       → [chunk] → [embed] → [upsert Qdrant] → ProcessDocumentResponse
+  File → detect type → create Document → upsert record (QUEUED) → upload MinIO
+       → PipelineCore (parse → chunk → embed → upsert + outbox)
+       → ProcessDocumentResponse
 """
 import time
 import uuid
@@ -14,38 +15,25 @@ from src.application.dto.document_dto import (
     ProcessDocumentRequest,
     ProcessDocumentResponse,
 )
-from src.domain.entities.chunk import Chunk
-from src.domain.entities.document import Document, DocumentType, ParsedDocument
+from src.application.use_cases._pipeline_core import PipelineCore
+from src.domain.constants import EXT_MAP, MIME_MAP
+from src.domain.entities.document import Document
+from src.domain.exceptions import UnsupportedFileTypeError
 from src.domain.ports.chunker import IChunker
 from src.domain.ports.embedder import IEmbedder
 from src.domain.ports.file_storage import IFileStorage
-from src.domain.ports.graph_store import GraphChunk, IGraphStore
-from src.domain.ports.metadata_store import (
-    IMetadataStore,
-    IngestionStatus,
-    StoredChunkMetadata,
-)
+from src.domain.ports.job_queue import EnrichmentJobPayload, IJobQueue
+from src.domain.ports.metadata_store import IMetadataStore, IngestionStatus
 from src.domain.ports.parser import IParser
 from src.domain.ports.preprocessor import IPreprocessor
 from src.domain.ports.vector_store import IVectorStore
-from src.domain.exceptions import UnsupportedFileTypeError
 from src.shared.logger import get_logger
+from src.shared.metrics import ACTIVE_REQUESTS, DOCUMENTS_PROCESSED
 from src.shared.result import Err, Ok, Result
 from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
-
-# Extension → DocumentType
-_EXT_MAP: dict[str, DocumentType] = {
-    ".pdf": DocumentType.PDF,
-    ".docx": DocumentType.DOCX,
-    ".doc": DocumentType.DOCX,
-    ".pptx": DocumentType.PPTX,
-    ".ppt": DocumentType.PPTX,
-    ".md": DocumentType.MARKDOWN,
-    ".markdown": DocumentType.MARKDOWN,
-}
 
 _META_KEY_ALIASES: dict[str, str] = {
     "courseid": "course_id",
@@ -54,8 +42,6 @@ _META_KEY_ALIASES: dict[str, str] = {
     "filename": "source_file_name",
     "originalfilename": "source_file_name",
 }
-
-_EVENT_HEADING_GRAPH_PROJECT = "heading_graph_project"
 
 
 class ProcessDocumentUseCase:
@@ -67,24 +53,29 @@ class ProcessDocumentUseCase:
         vector_store: IVectorStore,
         file_storage: IFileStorage,
         metadata_store: IMetadataStore,
-        graph_store: IGraphStore,
+        job_queue: IJobQueue,
         preprocessors: list[IPreprocessor] | None = None,
     ) -> None:
-        self._parsers = parsers
-        self._chunker = chunker
-        self._embedder = embedder
-        self._vector_store = vector_store
         self._file_storage = file_storage
         self._metadata_store = metadata_store
-        self._graph_store = graph_store
-        self._preprocessors = preprocessors or []
+        self._job_queue = job_queue
+        self._pipeline = PipelineCore(
+            parsers=parsers,
+            chunker=chunker,
+            embedder=embedder,
+            vector_store=vector_store,
+            metadata_store=metadata_store,
+            preprocessors=preprocessors,
+        )
 
     def execute(
         self, request: ProcessDocumentRequest
     ) -> Result[ProcessDocumentResponse, Exception]:
+        ACTIVE_REQUESTS.inc()
         started_at = time.perf_counter()
         document_id = request.document_id or str(uuid.uuid4())
         metadata = self._normalize_metadata(request.metadata)
+
         source_file_name = (
             request.original_file_name.strip()
             if request.original_file_name and request.original_file_name.strip()
@@ -106,8 +97,9 @@ class ProcessDocumentUseCase:
             )
 
             # 1. Detect document type
-            doc_type = request.doc_type or self._detect_type(request.file_path)
+            doc_type = request.doc_type or EXT_MAP.get(request.file_path.suffix.lower())
             if doc_type is None:
+                ACTIVE_REQUESTS.dec()
                 return Err(UnsupportedFileTypeError(request.file_path.suffix))
 
             span.set_attribute("document.type", doc_type.value)
@@ -119,20 +111,20 @@ class ProcessDocumentUseCase:
                     path=request.file_path,
                     doc_type=doc_type,
                     size_bytes=request.file_path.stat().st_size,
-                    mime_type=self._mime_type(doc_type),
+                    mime_type=MIME_MAP.get(doc_type, "application/octet-stream"),
                 )
-
                 storage_key = f"{doc_type.value}/{document_id}/{document.name}"
                 metadata["storage_key"] = storage_key
 
-                # SQL source of truth: luôn upsert record trước khi chạy pipeline.
-                store_doc_result = self._metadata_store.upsert_document(
+                # 2. Upsert document record (QUEUED) — SQL source of truth
+                store_result = self._metadata_store.upsert_document(
                     document=document,
                     metadata=metadata,
                     status=IngestionStatus.QUEUED,
                 )
-                if store_doc_result.is_err():
-                    return Err(store_doc_result.error)
+                if store_result.is_err():
+                    ACTIVE_REQUESTS.dec()
+                    return Err(store_result.error)
 
                 # 3. Upload raw file to object storage
                 upload_result = self._file_storage.upload(request.file_path, storage_key)
@@ -142,186 +134,34 @@ class ProcessDocumentUseCase:
                         document_id=document_id,
                         error=str(upload_result.error),
                     )
-                    return self._fail(document_id, upload_result.error)
+                    ACTIVE_REQUESTS.dec()
+                    DOCUMENTS_PROCESSED.labels(status="failed", doc_type=doc_type.value).inc()
+                    self._metadata_store.update_document_status(
+                        document_id, IngestionStatus.ERROR, error_msg=str(upload_result.error)
+                    )
+                    return Err(upload_result.error)
 
                 logger.debug("process_document.uploaded", document_id=document_id, key=storage_key)
 
-                parsing_status = self._metadata_store.update_document_status(
-                    document_id=document_id,
-                    status=IngestionStatus.PARSING,
-                )
-                if parsing_status.is_err():
-                    return self._fail(document_id, parsing_status.error)
-
-                # 4. Preprocessors (OCR, v.v.) — áp dụng tuần tự nếu cần
-                file_path = request.file_path
-                for preprocessor in self._preprocessors:
-                    if preprocessor.should_apply(file_path):
-                        logger.debug(
-                            "process_document.preprocessing",
-                            preprocessor=type(preprocessor).__name__,
-                        )
-                        file_path = preprocessor.process(file_path)
-
-                # 5. Parse
-                with tracer.start_as_current_span("parse"):
-                    parser = self._resolve_parser(doc_type)
-                    if parser is None:
-                        return self._fail(document_id, UnsupportedFileTypeError(doc_type.value))
-
-                    parse_result = parser.parse(file_path)
-                    if parse_result.is_err():
-                        logger.error(
-                            "process_document.parse_failed",
-                            document_id=document_id,
-                            error=str(parse_result.error),
-                        )
-                        return self._fail(document_id, parse_result.error)
-
-                parsed_doc = parse_result.unwrap()
-                self._align_parsed_document(
-                    parsed_doc=parsed_doc,
+                # 4. Run core pipeline (parse → chunk → embed → upsert + outbox)
+                core_result = self._pipeline.run(
                     document=document,
-                    language=metadata.get("language"),
                     metadata=metadata,
-                )
-                logger.debug(
-                    "process_document.parsed",
-                    document_id=document_id,
-                    sections=len(parsed_doc.sections),
-                    pages=parsed_doc.page_count,
+                    language=metadata.get("language"),
                 )
 
-                chunking_status = self._metadata_store.update_document_status(
-                    document_id=document_id,
-                    status=IngestionStatus.CHUNKING,
-                )
-                if chunking_status.is_err():
-                    return self._fail(document_id, chunking_status.error)
+                ACTIVE_REQUESTS.dec()
 
-                # 6. Chunk
-                with tracer.start_as_current_span("chunk"):
-                    chunk_result = self._chunker.chunk(parsed_doc)
-                    if chunk_result.is_err():
-                        logger.error(
-                            "process_document.chunk_failed",
-                            document_id=document_id,
-                            error=str(chunk_result.error),
-                        )
-                        return self._fail(document_id, chunk_result.error)
-
-                chunks = chunk_result.unwrap()
-                logger.debug("process_document.chunked", document_id=document_id, chunks=len(chunks))
-
-                embedding_status = self._metadata_store.update_document_status(
-                    document_id=document_id,
-                    status=IngestionStatus.EMBEDDING,
-                )
-                if embedding_status.is_err():
-                    return self._fail(document_id, embedding_status.error)
-
-                # 7. Embed
-                with tracer.start_as_current_span("embed"):
-                    embed_result = self._embedder.embed_chunks(chunks)
-                    if embed_result.is_err():
-                        logger.error(
-                            "process_document.embed_failed",
-                            document_id=document_id,
-                            error=str(embed_result.error),
-                        )
-                        return self._fail(document_id, embed_result.error)
-
-                embeddings = embed_result.unwrap()
-
-                upserting_status = self._metadata_store.update_document_status(
-                    document_id=document_id,
-                    status=IngestionStatus.UPSERTING,
-                )
-                if upserting_status.is_err():
-                    return self._fail(document_id, upserting_status.error)
-
-                # 8. Upsert to vector store
-                with tracer.start_as_current_span("upsert"):
-                    upsert_result = self._vector_store.upsert(chunks, embeddings)
-                    if upsert_result.is_err():
-                        logger.error(
-                            "process_document.upsert_failed",
-                            document_id=document_id,
-                            error=str(upsert_result.error),
-                        )
-                        return self._fail(document_id, upsert_result.error)
-
-                chunk_metadata_result = self._metadata_store.upsert_chunks(
-                    self._build_chunk_metadata(chunks),
-                )
-                if chunk_metadata_result.is_err():
-                    return self._fail(document_id, chunk_metadata_result.error)
-
-                graph_chunks = self._build_graph_chunks(chunks)
-                outbox_payload = {
-                    "document_id": document_id,
-                    "course_id": metadata.get("course_id"),
-                    "owner_id": metadata.get("owner_id"),
-                    "chunks": [
-                        {
-                            "chunk_id": c.chunk_id,
-                            "chunk_index": c.chunk_index,
-                            "heading_path": list(c.heading_path),
-                        }
-                        for c in graph_chunks
-                    ],
-                }
-                outbox_result = self._metadata_store.append_outbox_event(
-                    event_type=_EVENT_HEADING_GRAPH_PROJECT,
-                    aggregate_id=document_id,
-                    payload=outbox_payload,
-                )
-                if outbox_result.is_err():
-                    return self._fail(document_id, outbox_result.error)
-
-                # Best effort inline projection để Neo4j có dữ liệu ngay.
-                # Nếu lỗi, outbox vẫn giữ trạng thái retryable.
-                event_id = outbox_result.unwrap()
-                graph_result = self._graph_store.upsert_heading_graph(
-                    document_id=document_id,
-                    course_id=metadata.get("course_id"),
-                    owner_id=metadata.get("owner_id"),
-                    chunks=graph_chunks,
-                )
-                if graph_result.is_err():
-                    logger.warning(
-                        "process_document.graph_projection_failed",
+                if core_result.is_err():
+                    logger.error(
+                        "process_document.pipeline_failed",
                         document_id=document_id,
-                        error=str(graph_result.error),
+                        error=str(core_result.error),
                     )
-                    mark_failed = self._metadata_store.mark_outbox_failed(
-                        event_id=event_id,
-                        error_msg=str(graph_result.error),
-                    )
-                    if mark_failed.is_err():
-                        logger.error(
-                            "process_document.mark_outbox_failed_failed",
-                            document_id=document_id,
-                            event_id=event_id,
-                            error=str(mark_failed.error),
-                        )
-                else:
-                    mark_done = self._metadata_store.mark_outbox_done(event_id)
-                    if mark_done.is_err():
-                        logger.error(
-                            "process_document.mark_outbox_done_failed",
-                            document_id=document_id,
-                            event_id=event_id,
-                            error=str(mark_done.error),
-                        )
+                    return Err(core_result.error)
 
-                done_status = self._metadata_store.update_document_status(
-                    document_id=document_id,
-                    status=IngestionStatus.DONE,
-                )
-                if done_status.is_err():
-                    return self._fail(document_id, done_status.error)
-
+                core = core_result.unwrap()
+                chunks = core.chunks
                 duration_ms = (time.perf_counter() - started_at) * 1000
                 span.set_attribute("chunks.count", len(chunks))
                 span.set_attribute("duration_ms", duration_ms)
@@ -332,6 +172,7 @@ class ProcessDocumentUseCase:
                     chunks=len(chunks),
                     duration_ms=round(duration_ms, 2),
                 )
+                self._enqueue_enrichment(document_id)
 
                 return Ok(
                     ProcessDocumentResponse(
@@ -354,43 +195,23 @@ class ProcessDocumentUseCase:
                         processing_time_ms=round(duration_ms, 2),
                     )
                 )
+
             except Exception as exc:
+                ACTIVE_REQUESTS.dec()
+                DOCUMENTS_PROCESSED.labels(status="failed", doc_type=doc_type.value).inc()
+                self._metadata_store.update_document_status(
+                    document_id, IngestionStatus.ERROR, error_msg=str(exc)
+                )
                 logger.error(
                     "process_document.unhandled_exception",
                     document_id=document_id,
                     error=str(exc),
                 )
-                return self._fail(document_id, exc)
+                return Err(exc)
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def _detect_type(self, path: Path) -> DocumentType | None:
-        return _EXT_MAP.get(path.suffix.lower())
-
-    def _resolve_parser(self, doc_type: DocumentType) -> IParser | None:
-        for parser in self._parsers:
-            if parser.supports(doc_type):
-                return parser
-        return None
-
-    def _align_parsed_document(
-        self,
-        parsed_doc: ParsedDocument,
-        document: Document,
-        language: str | None,
-        metadata: dict[str, str],
-    ) -> None:
-        """
-        Đồng bộ ParsedDocument với document context do use case quản lý.
-        Tránh lệch document_id/name khi parser tự sinh Document riêng.
-        """
-        parsed_doc.document = document
-        if language:
-            parsed_doc.language = language
-        if metadata:
-            parsed_doc.metadata = {**parsed_doc.metadata, **metadata}
 
     def _normalize_metadata(self, raw_metadata: dict | None) -> dict[str, str]:
         if not raw_metadata:
@@ -400,64 +221,23 @@ class ProcessDocumentUseCase:
         for raw_key, raw_value in raw_metadata.items():
             if raw_key is None or raw_value is None:
                 continue
-
             key_text = str(raw_key).strip()
             value_text = str(raw_value).strip()
             if not key_text or not value_text:
                 continue
-
-            alias_key = self._normalize_alias_key(key_text)
+            alias_key = "".join(ch for ch in key_text.lower() if ch.isalnum())
             canonical_key = _META_KEY_ALIASES.get(alias_key, key_text)
             normalized[canonical_key] = value_text
 
         return normalized
 
-    def _normalize_alias_key(self, key: str) -> str:
-        return "".join(ch for ch in key.lower() if ch.isalnum())
-
-    def _build_chunk_metadata(self, chunks: list[Chunk]) -> list[StoredChunkMetadata]:
-        return [
-            StoredChunkMetadata(
-                chunk_id=chunk.id,
-                document_id=chunk.metadata.document_id,
-                chunk_index=chunk.metadata.chunk_index,
-                heading_path=chunk.metadata.heading_path,
-                heading_level=chunk.metadata.heading_level,
-                page_number=chunk.metadata.page_number,
-                content_length=len(chunk.content),
-                language=chunk.metadata.language,
-            )
-            for chunk in chunks
-        ]
-
-    def _build_graph_chunks(self, chunks: list[Chunk]) -> list[GraphChunk]:
-        return [
-            GraphChunk(
-                chunk_id=chunk.id,
-                chunk_index=chunk.metadata.chunk_index,
-                heading_path=chunk.metadata.heading_path,
-            )
-            for chunk in chunks
-        ]
-
-    def _fail(self, document_id: str, error: Exception) -> Result[ProcessDocumentResponse, Exception]:
-        fail_status = self._metadata_store.update_document_status(
-            document_id=document_id,
-            status=IngestionStatus.ERROR,
-            error_msg=str(error),
+    def _enqueue_enrichment(self, document_id: str) -> None:
+        enqueue_result = self._job_queue.enqueue_enrichment(
+            EnrichmentJobPayload(document_id=document_id)
         )
-        if fail_status.is_err():
-            logger.error(
-                "process_document.fail_status_update_failed",
+        if enqueue_result.is_err():
+            logger.warning(
+                "process_document.enrichment_enqueue_failed",
                 document_id=document_id,
-                error=str(fail_status.error),
+                error=str(enqueue_result.error),
             )
-        return Err(error)
-
-    def _mime_type(self, doc_type: DocumentType) -> str:
-        return {
-            DocumentType.PDF: "application/pdf",
-            DocumentType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            DocumentType.PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            DocumentType.MARKDOWN: "text/markdown",
-        }.get(doc_type, "application/octet-stream")
