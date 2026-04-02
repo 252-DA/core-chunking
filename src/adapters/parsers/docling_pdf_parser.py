@@ -21,12 +21,15 @@ from src.domain.entities.document import (
     ParsedDocument,
     Section,
 )
+from src.domain.exceptions import ParseError
 from src.domain.ports.parser import IParser
 from src.infrastructure.config import ParserConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 class DoclingPdfParser(IParser):
@@ -43,20 +46,26 @@ class DoclingPdfParser(IParser):
 
     def parse(self, path: Path) -> Result[ParsedDocument, Exception]:
         logger.info("docling_pdf_parser.started", file=path.name)
-        try:
-            result = self._converter.convert(str(path))
-            parsed = self._extract(path, result)
-            logger.info(
-                "docling_pdf_parser.completed",
-                file=path.name,
-                pages=parsed.page_count,
-                sections=len(parsed.sections),
-                images=len(parsed.images),
-            )
-            return Ok(parsed)
-        except Exception as exc:
-            logger.error("docling_pdf_parser.failed", file=path.name, error=str(exc))
-            return Err(exc)
+        with tracer.start_as_current_span("docling_pdf_parser.parse") as span:
+            span.set_attribute("file.name", path.name)
+            span.set_attribute("file.size_bytes", path.stat().st_size)
+            try:
+                result = self._converter.convert(str(path))
+                parsed = self._extract(path, result)
+                span.set_attribute("pages", parsed.page_count)
+                span.set_attribute("sections", len(parsed.sections))
+                span.set_attribute("images", len(parsed.images))
+                logger.info(
+                    "docling_pdf_parser.completed",
+                    file=path.name,
+                    pages=parsed.page_count,
+                    sections=len(parsed.sections),
+                    images=len(parsed.images),
+                )
+                return Ok(parsed)
+            except Exception as exc:
+                logger.error("docling_pdf_parser.failed", file=path.name, error=str(exc))
+                return Err(ParseError(f"Failed to parse PDF '{path.name}'", cause=exc))
 
     # ------------------------------------------------------------------
     # Lazy converter — khởi tạo DocumentConverter khi lần đầu được dùng

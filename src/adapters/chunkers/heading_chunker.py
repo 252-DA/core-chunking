@@ -14,12 +14,15 @@ from dataclasses import dataclass, field
 
 from src.domain.entities.chunk import Chunk, ChunkMetadata
 from src.domain.entities.document import DocumentType, ElementType, ParsedDocument, Section
+from src.domain.exceptions import ChunkError
 from src.domain.ports.chunker import IChunker
 from src.infrastructure.config import ChunkerConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 @dataclass
@@ -76,25 +79,30 @@ class HeadingChunker(IChunker):
         )
 
     def chunk(self, doc: ParsedDocument) -> Result[list[Chunk], Exception]:
-        try:
-            if doc.document.doc_type == DocumentType.PPTX:
-                chunks = self._chunk_by_slides(doc)
-            else:
-                chunks = self._chunk_by_headings(doc)
+        with tracer.start_as_current_span("heading_chunker.chunk") as span:
+            span.set_attribute("document.id", doc.document.id)
+            span.set_attribute("doc_type", doc.document.doc_type.value)
+            span.set_attribute("sections", len(doc.sections))
+            try:
+                if doc.document.doc_type == DocumentType.PPTX:
+                    chunks = self._chunk_by_slides(doc)
+                else:
+                    chunks = self._chunk_by_headings(doc)
 
-            chunks = self._merge_small_chunks(chunks, doc.document.doc_type)
+                chunks = self._merge_small_chunks(chunks, doc.document.doc_type)
 
-            logger.debug(
-                "chunker.done",
-                document_id=doc.document.id,
-                chunks=len(chunks),
-                doc_type=doc.document.doc_type.value,
-            )
-            return Ok(chunks)
+                span.set_attribute("chunks.count", len(chunks))
+                logger.debug(
+                    "chunker.done",
+                    document_id=doc.document.id,
+                    chunks=len(chunks),
+                    doc_type=doc.document.doc_type.value,
+                )
+                return Ok(chunks)
 
-        except Exception as e:
-            logger.error("chunker.failed", document_id=doc.document.id, error=str(e))
-            return Err(e)
+            except Exception as e:
+                logger.error("chunker.failed", document_id=doc.document.id, error=str(e))
+                return Err(ChunkError(f"Failed to chunk document '{doc.document.id}'", cause=e))
 
     # ------------------------------------------------------------------
     # Strategy 1: Heading-based (PDF, DOCX, Markdown)

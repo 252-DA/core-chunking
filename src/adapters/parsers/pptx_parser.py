@@ -25,12 +25,15 @@ from src.domain.entities.document import (
     ParsedDocument,
     Section,
 )
+from src.domain.exceptions import ParseError
 from src.domain.ports.parser import IParser
 from src.infrastructure.config import ParserConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 class PptxParser(IParser):
@@ -43,20 +46,26 @@ class PptxParser(IParser):
 
     def parse(self, path: Path) -> Result[ParsedDocument, Exception]:
         logger.info("pptx_parser.started", file=path.name)
-        try:
-            prs = Presentation(str(path))
-            result = self._extract(path, prs)
-            logger.info(
-                "pptx_parser.completed",
-                file=path.name,
-                slides=result.page_count,
-                sections=len(result.sections),
-                images=len(result.images),
-            )
-            return Ok(result)
-        except Exception as e:
-            logger.error("pptx_parser.failed", file=path.name, error=str(e))
-            return Err(e)
+        with tracer.start_as_current_span("pptx_parser.parse") as span:
+            span.set_attribute("file.name", path.name)
+            span.set_attribute("file.size_bytes", path.stat().st_size)
+            try:
+                prs = Presentation(str(path))
+                result = self._extract(path, prs)
+                span.set_attribute("slides", result.page_count)
+                span.set_attribute("sections", len(result.sections))
+                span.set_attribute("images", len(result.images))
+                logger.info(
+                    "pptx_parser.completed",
+                    file=path.name,
+                    slides=result.page_count,
+                    sections=len(result.sections),
+                    images=len(result.images),
+                )
+                return Ok(result)
+            except Exception as e:
+                logger.error("pptx_parser.failed", file=path.name, error=str(e))
+                return Err(ParseError(f"Failed to parse PPTX '{path.name}'", cause=e))
 
     # ------------------------------------------------------------------
     # Core extraction
@@ -200,7 +209,12 @@ class PptxParser(IParser):
                     filename = f"slide_{slide_num}_{shape.shape_id}.{ext}"
                     images[filename] = img.blob
                     slide_image_names.append(filename)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "pptx_parser.image_extract_failed",
+                        slide_number=slide_num,
+                        shape_id=shape.shape_id,
+                        error=str(exc),
+                    )
 
         return slide_image_names

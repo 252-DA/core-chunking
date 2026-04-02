@@ -22,12 +22,15 @@ from src.domain.entities.document import (
     ParsedDocument,
     Section,
 )
+from src.domain.exceptions import ParseError
 from src.domain.ports.parser import IParser
 from src.infrastructure.config import ParserConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 # Font size nhỏ hơn ngưỡng này coi là caption/footer → bỏ qua
 _MIN_FONT_SIZE = 6.0
@@ -45,21 +48,26 @@ class PdfParser(IParser):
 
     def parse(self, path: Path) -> Result[ParsedDocument, Exception]:
         logger.info("pdf_parser.started", file=path.name)
-        try:
-            doc = fitz.open(str(path))
-            result = self._extract(path, doc)
-            doc.close()
-            logger.info(
-                "pdf_parser.completed",
-                file=path.name,
-                pages=result.page_count,
-                sections=len(result.sections),
-            )
-            return Ok(result)
+        with tracer.start_as_current_span("pdf_parser.parse") as span:
+            span.set_attribute("file.name", path.name)
+            span.set_attribute("file.size_bytes", path.stat().st_size)
+            try:
+                doc = fitz.open(str(path))
+                result = self._extract(path, doc)
+                doc.close()
+                span.set_attribute("pages", result.page_count)
+                span.set_attribute("sections", len(result.sections))
+                logger.info(
+                    "pdf_parser.completed",
+                    file=path.name,
+                    pages=result.page_count,
+                    sections=len(result.sections),
+                )
+                return Ok(result)
 
-        except Exception as e:
-            logger.error("pdf_parser.failed", file=path.name, error=str(e))
-            return Err(e)
+            except Exception as e:
+                logger.error("pdf_parser.failed", file=path.name, error=str(e))
+                return Err(ParseError(f"Failed to parse PDF '{path.name}'", cause=e))
 
     # ------------------------------------------------------------------
     # Core extraction
