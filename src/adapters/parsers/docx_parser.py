@@ -23,12 +23,15 @@ from src.domain.entities.document import (
     ParsedDocument,
     Section,
 )
+from src.domain.exceptions import ParseError
 from src.domain.ports.parser import IParser
 from src.infrastructure.config import ParserConfig
 from src.shared.logger import get_logger
 from src.shared.result import Err, Ok, Result
+from src.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 # Word style names → heading level
 _HEADING_STYLE_MAP: dict[str, int] = {
@@ -55,19 +58,24 @@ class DocxParser(IParser):
 
     def parse(self, path: Path) -> Result[ParsedDocument, Exception]:
         logger.info("docx_parser.started", file=path.name)
-        try:
-            doc = docx.Document(str(path))
-            result = self._extract(path, doc)
-            logger.info(
-                "docx_parser.completed",
-                file=path.name,
-                sections=len(result.sections),
-                images=len(result.images),
-            )
-            return Ok(result)
-        except Exception as e:
-            logger.error("docx_parser.failed", file=path.name, error=str(e))
-            return Err(e)
+        with tracer.start_as_current_span("docx_parser.parse") as span:
+            span.set_attribute("file.name", path.name)
+            span.set_attribute("file.size_bytes", path.stat().st_size)
+            try:
+                doc = docx.Document(str(path))
+                result = self._extract(path, doc)
+                span.set_attribute("sections", len(result.sections))
+                span.set_attribute("images", len(result.images))
+                logger.info(
+                    "docx_parser.completed",
+                    file=path.name,
+                    sections=len(result.sections),
+                    images=len(result.images),
+                )
+                return Ok(result)
+            except Exception as e:
+                logger.error("docx_parser.failed", file=path.name, error=str(e))
+                return Err(ParseError(f"Failed to parse DOCX '{path.name}'", cause=e))
 
     # ------------------------------------------------------------------
     # Core extraction
@@ -227,6 +235,10 @@ class DocxParser(IParser):
                     ext = img_part.content_type.split("/")[-1]
                     filename = f"img_{rel.rId}.{ext}"
                     images[filename] = img_part.blob
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "docx_parser.image_extract_failed",
+                        relationship_id=rel.rId,
+                        error=str(exc),
+                    )
         return images

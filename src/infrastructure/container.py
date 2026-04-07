@@ -40,6 +40,22 @@ class Container:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
+    def close(self) -> None:
+        for component_name in ("graph_store", "metadata_store"):
+            component = self.__dict__.get(component_name)
+            close = getattr(component, "close", None)
+            if not callable(close):
+                continue
+
+            try:
+                close()
+            except Exception as exc:
+                logger.warning(
+                    "container.close_failed",
+                    component=component_name,
+                    error=str(exc),
+                )
+
     # ------------------------------------------------------------------
     # Parsers
     # ------------------------------------------------------------------
@@ -174,7 +190,7 @@ class Container:
             vector_store=self.vector_store,
             file_storage=self.file_storage,
             metadata_store=self.metadata_store,
-            graph_store=self.graph_store,
+            job_queue=self.job_queue,
         )
 
     @cached_property
@@ -187,14 +203,30 @@ class Container:
         )
 
     @cached_property
-    def outbox_projector(self):
-        from src.application.services.outbox_projector import OutboxProjector
+    def delete_document_use_case(self):
+        from src.application.use_cases.delete_document import DeleteDocumentUseCase
 
-        logger.debug("container.init", component="OutboxProjector")
-        return OutboxProjector(
+        logger.debug("container.init", component="DeleteDocumentUseCase")
+        return DeleteDocumentUseCase(
             metadata_store=self.metadata_store,
-            graph_store=self.graph_store,
         )
+
+    @cached_property
+    def job_queue(self):
+        from src.adapters.queue.bullmq_adapter import BullMQAdapter
+        logger.debug("container.init", component="BullMQAdapter")
+        return BullMQAdapter(self._settings.redis)
+
+    @cached_property
+    def enqueue_document_use_case(self):
+        from src.application.use_cases.enqueue_document import EnqueueDocumentUseCase
+        logger.debug("container.init", component="EnqueueDocumentUseCase")
+        return EnqueueDocumentUseCase(
+            file_storage=self.file_storage,
+            metadata_store=self.metadata_store,
+            job_queue=self.job_queue,
+        )
+
 
 
 @lru_cache

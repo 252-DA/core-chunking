@@ -7,8 +7,14 @@ package chunking;
 // ---------------------------------------------------------------------------
 
 service ChunkingService {
-  // Nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO
+  // Sync: nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO → trả kết quả ngay
   rpc ProcessDocument(ProcessDocumentRequest) returns (ProcessDocumentResponse);
+
+  // Async: upload file → enqueue BullMQ job → trả về ngay với document_id
+  rpc EnqueueDocument(ProcessDocumentRequest) returns (EnqueueDocumentResponse);
+
+  // Poll trạng thái job async
+  rpc GetDocumentStatus(GetDocumentStatusRequest) returns (GetDocumentStatusResponse);
 
   // Semantic search qua vector similarity
   rpc Search(SearchRequest) returns (SearchResponse);
@@ -52,6 +58,27 @@ message ProcessDocumentResponse {
 }
 
 // ---------------------------------------------------------------------------
+// EnqueueDocument (async)
+// ---------------------------------------------------------------------------
+
+message EnqueueDocumentResponse {
+  string document_id = 1;
+  string status      = 2;  // "QUEUED"
+  string job_id      = 3;  // BullMQ job ID (== document_id)
+}
+
+message GetDocumentStatusRequest {
+  string document_id = 1;
+}
+
+message GetDocumentStatusResponse {
+  string document_id = 1;
+  string status      = 2;  // "QUEUED" | "PARSING" | "CHUNKING" | "EMBEDDING" | "UPSERTING" | "DONE" | "ENRICHING" | "ENRICHED" | "ERROR"
+  string error_msg   = 3;  // populated khi status == "ERROR"
+  string storage_key = 4;  // MinIO key, populated sau khi file được upload
+}
+
+// ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
 
@@ -64,6 +91,8 @@ message SearchRequest {
   repeated string doc_types    = 4;  // "pdf", "docx", ...
   repeated string document_ids = 5;
   string language              = 6;
+  string course_id             = 7;
+  string owner_id              = 8;
 }
 
 message SearchResultItem {

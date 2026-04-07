@@ -65,6 +65,15 @@ class Neo4jConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="NEO4J_")
 
 
+class RedisConfig(BaseSettings):
+    host: str = "localhost"
+    port: int = 6379
+    password: str | None = None
+    db: int = 0
+
+    model_config = SettingsConfigDict(env_prefix="REDIS_")
+
+
 class OutboxConfig(BaseSettings):
     enabled: bool = True
     poll_interval_seconds: int = 5
@@ -147,6 +156,7 @@ class Settings(BaseSettings):
     minio: MinioConfig = Field(default_factory=MinioConfig)
     sql: SqlConfig = Field(default_factory=SqlConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
     outbox: OutboxConfig = Field(default_factory=OutboxConfig)
     parser: ParserConfig = Field(default_factory=ParserConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)

@@ -12,6 +12,7 @@ Model load một lần duy nhất (lazy, singleton qua container).
 import time
 from functools import cached_property
 
+from src.domain.exceptions import EmbedError
 from src.domain.ports.embedder import IEmbedder
 from src.infrastructure.config import EmbedderConfig
 from src.shared.logger import get_logger
@@ -99,4 +100,4 @@ class BgeEmbedder(IEmbedder):
 
             except Exception as e:
                 logger.error("bge_embedder.failed", error=str(e))
-                return Err(e)
+                return Err(EmbedError("BGE embedder failed", cause=e))

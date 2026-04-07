@@ -1,12 +1,13 @@
 """
-ChunkingServicer — implement gRPC methods, bridge giữa gRPC và use cases.
+ChunkingServicer — gRPC method implementations.
 
-Luồng xử lý:
-  gRPC request → validate → build DTO → use_case.execute() → map Result → gRPC response
+Bridges gRPC ↔ application use cases.
+No business logic here — only:
+  request validation → DTO mapping → use_case.execute() → gRPC response mapping.
 
 File transfer:
-  Client gửi file_data (bytes) trong request.
-  Servicer lưu vào temp file → truyền path cho use case → xóa temp file sau khi xong.
+  Client sends file_data (bytes) in the request.
+  Servicer writes to a temp file → passes path to use case → deletes temp file.
 """
 import tempfile
 from pathlib import Path
@@ -15,11 +16,19 @@ import grpc
 
 from src.application.dto.document_dto import ProcessDocumentRequest
 from src.application.dto.search_dto import SearchRequest
+from src.application.use_cases.delete_document import (
+    DeleteDocumentRequest,
+    DeleteDocumentUseCase,
+)
+from src.application.use_cases.enqueue_document import (
+    EnqueueDocumentRequest,
+    EnqueueDocumentUseCase,
+)
 from src.application.use_cases.process_document import ProcessDocumentUseCase
 from src.application.use_cases.search_chunks import SearchChunksUseCase
 from src.delivery.grpc.proto import chunking_pb2, chunking_pb2_grpc
 from src.domain.entities.document import DocumentType
-from src.domain.ports.vector_store import IVectorStore
+from src.domain.ports.metadata_store import IMetadataStore
 from src.shared.logger import get_logger
 from src.shared.tracing import get_tracer
 
@@ -34,14 +43,18 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         self,
         process_use_case: ProcessDocumentUseCase,
         search_use_case: SearchChunksUseCase,
-        vector_store: IVectorStore,
+        enqueue_use_case: EnqueueDocumentUseCase,
+        delete_use_case: DeleteDocumentUseCase,
+        metadata_store: IMetadataStore,
     ) -> None:
         self._process = process_use_case
         self._search = search_use_case
-        self._vector_store = vector_store
+        self._enqueue = enqueue_use_case
+        self._delete = delete_use_case
+        self._metadata_store = metadata_store
 
     # ------------------------------------------------------------------
-    # ProcessDocument
+    # ProcessDocument (sync)
     # ------------------------------------------------------------------
 
     def ProcessDocument(
@@ -50,7 +63,6 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         context: grpc.ServicerContext,
     ) -> chunking_pb2.ProcessDocumentResponse:
         with tracer.start_as_current_span("grpc.ProcessDocument"):
-            # Validate
             if not request.file_data:
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
             if not request.file_name:
@@ -62,18 +74,14 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                 size_bytes=len(request.file_data),
             )
 
-            # Lưu bytes vào temp file (dùng suffix từ file_name để detect type)
             suffix = Path(request.file_name).suffix or ".tmp"
             tmp_path: Path | None = None
 
             try:
-                with tempfile.NamedTemporaryFile(
-                    suffix=suffix, delete=False
-                ) as tmp:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                     tmp.write(request.file_data)
                     tmp_path = Path(tmp.name)
 
-                # Build DTO
                 dto = ProcessDocumentRequest(
                     file_path=tmp_path,
                     document_id=request.document_id or None,
@@ -81,9 +89,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                     language=request.language or None,
                     metadata=dict(request.metadata),
                 )
-                dto.model_fields["file_path"]  # trigger pydantic parse
 
-                # Execute use case
                 result = self._process.execute(dto)
 
                 if result.is_err():
@@ -117,7 +123,6 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                 context.abort(grpc.StatusCode.INTERNAL, str(e))
 
             finally:
-                # Luôn xóa temp file
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
 
@@ -144,6 +149,8 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                     doc_types=[DocumentType(dt) for dt in request.doc_types if dt],
                     document_ids=list(request.document_ids),
                     language=request.language or None,
+                    course_id=request.course_id or None,
+                    owner_id=request.owner_id or None,
                 )
 
                 result = self._search.execute(dto)
@@ -192,9 +199,9 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
 
         logger.info("grpc.DeleteDocument.received", document_id=request.document_id)
 
-        # Delegate trực tiếp xuống vector_store — không cần use case riêng
-        # (xóa là single operation, không có business logic phức tạp)
-        result = self._vector_store.delete_by_document(request.document_id)
+        result = self._delete.execute(
+            DeleteDocumentRequest(document_id=request.document_id)
+        )
 
         if result.is_err():
             return chunking_pb2.DeleteDocumentResponse(
@@ -203,9 +210,98 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
             )
 
         logger.info("grpc.DeleteDocument.done", document_id=request.document_id)
+        response = result.unwrap()
         return chunking_pb2.DeleteDocumentResponse(
-            success=True,
-            message=f"Deleted all chunks for document {request.document_id}",
+            success=response.success,
+            message=response.message,
+        )
+
+    # ------------------------------------------------------------------
+    # EnqueueDocument (async)
+    # ------------------------------------------------------------------
+
+    def EnqueueDocument(
+        self,
+        request: chunking_pb2.ProcessDocumentRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.EnqueueDocumentResponse:
+        with tracer.start_as_current_span("grpc.EnqueueDocument"):
+            if not request.file_data:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
+            if not request.file_name:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_name is required")
+
+            logger.info(
+                "grpc.EnqueueDocument.received",
+                file_name=request.file_name,
+                size_bytes=len(request.file_data),
+            )
+
+            suffix = Path(request.file_name).suffix or ".tmp"
+            tmp_path: Path | None = None
+
+            try:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp.write(request.file_data)
+                    tmp_path = Path(tmp.name)
+
+                dto = EnqueueDocumentRequest(
+                    file_path=tmp_path,
+                    file_name=request.file_name,
+                    document_id=request.document_id or None,
+                    language=request.language or None,
+                    metadata=dict(request.metadata),
+                )
+
+                result = self._enqueue.execute(dto)
+
+                if result.is_err():
+                    err_msg = str(result.error)
+                    logger.error("grpc.EnqueueDocument.failed", error=err_msg)
+                    context.abort(grpc.StatusCode.INTERNAL, err_msg)
+
+                resp = result.unwrap()
+                return chunking_pb2.EnqueueDocumentResponse(
+                    document_id=resp.document_id,
+                    status=resp.status,
+                    job_id=resp.job_id,
+                )
+
+            except Exception as e:
+                logger.error("grpc.EnqueueDocument.exception", error=str(e))
+                context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+            finally:
+                if tmp_path and tmp_path.exists():
+                    tmp_path.unlink()
+
+    # ------------------------------------------------------------------
+    # GetDocumentStatus
+    # ------------------------------------------------------------------
+
+    def GetDocumentStatus(
+        self,
+        request: chunking_pb2.GetDocumentStatusRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.GetDocumentStatusResponse:
+        if not request.document_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "document_id is required")
+
+        result = self._metadata_store.get_document_status(request.document_id)
+
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        status_tuple = result.unwrap()
+        if status_tuple is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"Document {request.document_id} not found")
+
+        status, error_msg, storage_key = status_tuple
+        return chunking_pb2.GetDocumentStatusResponse(
+            document_id=request.document_id,
+            status=status.value,
+            error_msg=error_msg or "",
+            storage_key=storage_key or "",
         )
 
     # ------------------------------------------------------------------

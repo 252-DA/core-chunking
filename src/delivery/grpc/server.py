@@ -52,7 +52,9 @@ def serve() -> None:
     servicer = ChunkingServicer(
         process_use_case=container.process_document_use_case,
         search_use_case=container.search_chunks_use_case,
-        vector_store=container.vector_store,
+        enqueue_use_case=container.enqueue_document_use_case,
+        delete_use_case=container.delete_document_use_case,
+        metadata_store=container.metadata_store,
     )
 
     # Build server
@@ -73,6 +75,7 @@ def serve() -> None:
     def _shutdown(signum, frame):
         logger.info("grpc.server.shutting_down")
         server.stop(grace=5)  # 5s grace period cho requests đang xử lý
+        container.close()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)

@@ -9,6 +9,8 @@ Hierarchy:
     ├── EmbedError               — embedder thất bại
     ├── VectorStoreError         — lỗi lúc upsert / search Qdrant
     ├── FileStorageError         — lỗi lúc upload / download MinIO
+    ├── MetadataStoreError       — lỗi lúc đọc / ghi PostgreSQL
+    ├── GraphStoreError          — lỗi lúc đọc / ghi Neo4j
     └── ProcessingError          — lỗi orchestration (use case level)
 
 Cách dùng trong adapters:
@@ -79,6 +81,14 @@ class FileStorageError(ChunkingError):
     """Lỗi khi tương tác với object storage (MinIO / S3)."""
 
 
+class MetadataStoreError(ChunkingError):
+    """Lỗi khi tương tác với metadata database (PostgreSQL)."""
+
+
+class GraphStoreError(ChunkingError):
+    """Lỗi khi tương tác với graph database (Neo4j)."""
+
+
 # ---------------------------------------------------------------------------
 # Use case / orchestration layer
 # ---------------------------------------------------------------------------
@@ -98,5 +108,7 @@ __all__ = [
     "EmbedError",
     "VectorStoreError",
     "FileStorageError",
+    "MetadataStoreError",
+    "GraphStoreError",
     "ProcessingError",
 ]
