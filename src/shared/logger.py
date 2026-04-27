@@ -23,6 +23,12 @@ def _inject_trace_context(logger: Any, method: str, event_dict: dict) -> dict:
     return event_dict
 
 
+def _coerce_log_level(level: str | int) -> int:
+    if isinstance(level, int):
+        return level
+    return getattr(logging, str(level).upper(), logging.INFO)
+
+
 def setup_logging(level: str = "INFO", json_logs: bool = False) -> None:
     """
     Configure structlog for the application.
@@ -31,6 +37,15 @@ def setup_logging(level: str = "INFO", json_logs: bool = False) -> None:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_logs: True for JSON output (production), False for pretty output (dev)
     """
+    log_level = _coerce_log_level(level)
+
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=log_level,
+        force=True,
+    )
+
     shared_processors = [
         # Merge context vars bound via bind_contextvars() — useful for request_id, trace_id
         structlog.contextvars.merge_contextvars,
@@ -56,11 +71,9 @@ def setup_logging(level: str = "INFO", json_logs: bool = False) -> None:
 
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(
-            logging.getLevelName(level)
-        ),
+        wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(sys.stdout),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

@@ -26,6 +26,13 @@ class GrpcConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GRPC_")
 
 
+class HttpConfig(BaseSettings):
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+    model_config = SettingsConfigDict(env_prefix="HTTP_")
+
+
 class QdrantConfig(BaseSettings):
     host: str = "localhost"
     port: int = 6333
@@ -152,6 +159,7 @@ class MetricsConfig(BaseSettings):
 class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
     grpc: GrpcConfig = Field(default_factory=GrpcConfig)
+    http: HttpConfig = Field(default_factory=HttpConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     minio: MinioConfig = Field(default_factory=MinioConfig)
     sql: SqlConfig = Field(default_factory=SqlConfig)
