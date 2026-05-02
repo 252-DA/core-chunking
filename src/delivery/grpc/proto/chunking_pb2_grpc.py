@@ -5,7 +5,7 @@ import warnings
 
 import chunking_pb2 as chunking__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -53,6 +53,16 @@ class ChunkingServiceStub(object):
                 request_serializer=chunking__pb2.GetDocumentStatusRequest.SerializeToString,
                 response_deserializer=chunking__pb2.GetDocumentStatusResponse.FromString,
                 _registered_method=True)
+        self.GetCards = channel.unary_unary(
+                '/chunking.ChunkingService/GetCards',
+                request_serializer=chunking__pb2.GetCardsRequest.SerializeToString,
+                response_deserializer=chunking__pb2.GetCardsResponse.FromString,
+                _registered_method=True)
+        self.GetQuiz = channel.unary_unary(
+                '/chunking.ChunkingService/GetQuiz',
+                request_serializer=chunking__pb2.GetQuizRequest.SerializeToString,
+                response_deserializer=chunking__pb2.GetQuizResponse.FromString,
+                _registered_method=True)
         self.Search = channel.unary_unary(
                 '/chunking.ChunkingService/Search',
                 request_serializer=chunking__pb2.SearchRequest.SerializeToString,
@@ -98,6 +108,20 @@ class ChunkingServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetCards(self, request, context):
+        """Lấy lesson cards đã generate cho document
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetQuiz(self, request, context):
+        """Lấy quiz questions đã generate cho document
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Search(self, request, context):
         """Semantic search qua vector similarity
         """
@@ -136,6 +160,16 @@ def add_ChunkingServiceServicer_to_server(servicer, server):
                     servicer.GetDocumentStatus,
                     request_deserializer=chunking__pb2.GetDocumentStatusRequest.FromString,
                     response_serializer=chunking__pb2.GetDocumentStatusResponse.SerializeToString,
+            ),
+            'GetCards': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCards,
+                    request_deserializer=chunking__pb2.GetCardsRequest.FromString,
+                    response_serializer=chunking__pb2.GetCardsResponse.SerializeToString,
+            ),
+            'GetQuiz': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetQuiz,
+                    request_deserializer=chunking__pb2.GetQuizRequest.FromString,
+                    response_serializer=chunking__pb2.GetQuizResponse.SerializeToString,
             ),
             'Search': grpc.unary_unary_rpc_method_handler(
                     servicer.Search,
@@ -238,6 +272,60 @@ class ChunkingService(object):
             '/chunking.ChunkingService/GetDocumentStatus',
             chunking__pb2.GetDocumentStatusRequest.SerializeToString,
             chunking__pb2.GetDocumentStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetCards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/GetCards',
+            chunking__pb2.GetCardsRequest.SerializeToString,
+            chunking__pb2.GetCardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetQuiz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/GetQuiz',
+            chunking__pb2.GetQuizRequest.SerializeToString,
+            chunking__pb2.GetQuizResponse.FromString,
             options,
             channel_credentials,
             insecure,

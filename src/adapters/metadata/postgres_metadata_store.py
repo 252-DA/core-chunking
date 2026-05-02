@@ -14,6 +14,8 @@ from src.domain.ports.metadata_store import (
     StoredChunkMetadata,
     StoredConcept,
     StoredDocumentContext,
+    StoredLessonCard,
+    StoredQuizItem,
 )
 from src.infrastructure.config import OutboxConfig, SqlConfig
 from src.shared.logger import get_logger
@@ -148,6 +150,23 @@ class PostgresMetadataStore(IMetadataStore):
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS chunk_contents (
+                    chunk_id TEXT PRIMARY KEY REFERENCES chunks_metadata (chunk_id) ON DELETE CASCADE,
+                    document_id TEXT NOT NULL,
+                    content_text TEXT NOT NULL DEFAULT '',
+                    enriched_content TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chunk_contents_document_id
+                ON chunk_contents (document_id);
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS outbox_events (
                     id UUID PRIMARY KEY,
                     event_type TEXT NOT NULL,
@@ -205,6 +224,54 @@ class PostgresMetadataStore(IMetadataStore):
                 """
                 CREATE INDEX IF NOT EXISTS idx_chunk_concepts_concept_id
                 ON chunk_concepts (concept_id);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lesson_cards (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL REFERENCES documents_metadata (document_id) ON DELETE CASCADE,
+                    primary_chunk_id TEXT NOT NULL REFERENCES chunks_metadata (chunk_id) ON DELETE CASCADE,
+                    source_chunk_ids TEXT[] NOT NULL DEFAULT '{}',
+                    heading_path TEXT[] NOT NULL DEFAULT '{}',
+                    title TEXT NOT NULL,
+                    bullets TEXT[] NOT NULL DEFAULT '{}',
+                    key_insight TEXT,
+                    card_index INT NOT NULL DEFAULT 0,
+                    model_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_lesson_cards_document_chunk_order
+                ON lesson_cards (document_id, primary_chunk_id, card_index);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quiz_items (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL REFERENCES documents_metadata (document_id) ON DELETE CASCADE,
+                    primary_chunk_id TEXT NOT NULL REFERENCES chunks_metadata (chunk_id) ON DELETE CASCADE,
+                    source_chunk_ids TEXT[] NOT NULL DEFAULT '{}',
+                    heading_path TEXT[] NOT NULL DEFAULT '{}',
+                    question TEXT NOT NULL,
+                    choices TEXT[] NOT NULL DEFAULT '{}',
+                    correct_index INT NOT NULL,
+                    explanation TEXT,
+                    difficulty TEXT NOT NULL DEFAULT 'medium',
+                    question_index INT NOT NULL DEFAULT 0,
+                    model_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_quiz_items_document_chunk_order
+                ON quiz_items (document_id, primary_chunk_id, question_index);
                 """
             )
         conn.commit()
@@ -378,17 +445,21 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT chunk_id,
-                               document_id,
-                               chunk_index,
-                               heading_path,
-                               heading_level,
-                               page_number,
-                               content_length,
-                               language
-                        FROM chunks_metadata
-                        WHERE document_id = %s
-                        ORDER BY chunk_index ASC;
+                        SELECT cm.chunk_id,
+                               cm.document_id,
+                               cm.chunk_index,
+                               cm.heading_path,
+                               cm.heading_level,
+                               cm.page_number,
+                               cm.content_length,
+                               cm.language,
+                               cc.content_text,
+                               cc.enriched_content
+                        FROM chunks_metadata cm
+                        LEFT JOIN chunk_contents cc
+                          ON cc.chunk_id = cm.chunk_id
+                        WHERE cm.document_id = %s
+                        ORDER BY cm.chunk_index ASC;
                         """,
                         (document_id,),
                     )
@@ -405,6 +476,8 @@ class PostgresMetadataStore(IMetadataStore):
                         page_number=row[5],
                         content_length=row[6],
                         language=row[7],
+                        content_text=row[8],
+                        enriched_content=row[9],
                     )
                     for row in rows
                 ]
@@ -419,42 +492,7 @@ class PostgresMetadataStore(IMetadataStore):
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.executemany(
-                        """
-                        INSERT INTO concepts (
-                            id,
-                            name,
-                            canonical_name,
-                            slug,
-                            domain,
-                            category,
-                            language,
-                            updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT (id)
-                        DO UPDATE SET
-                            name = EXCLUDED.name,
-                            canonical_name = EXCLUDED.canonical_name,
-                            slug = EXCLUDED.slug,
-                            domain = EXCLUDED.domain,
-                            category = EXCLUDED.category,
-                            language = COALESCE(EXCLUDED.language, language),
-                            updated_at = NOW();
-                        """,
-                        [
-                            (
-                                concept.concept_id,
-                                concept.name,
-                                concept.canonical_name,
-                                concept.slug,
-                                concept.domain,
-                                concept.category,
-                                concept.language,
-                            )
-                            for concept in concepts
-                        ],
-                    )
+                    self._upsert_concepts_cursor(cur, concepts)
                 conn.commit()
             return Ok(None)
         except Exception as exc:
@@ -470,34 +508,144 @@ class PostgresMetadataStore(IMetadataStore):
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    cur.executemany(
-                        """
-                        INSERT INTO chunk_concepts (
-                            chunk_id,
-                            concept_id,
-                            confidence,
-                            source,
-                            updated_at
-                        )
-                        VALUES (%s, %s, %s, %s, NOW())
-                        ON CONFLICT (chunk_id, concept_id)
-                        DO UPDATE SET
-                            confidence = EXCLUDED.confidence,
-                            source = EXCLUDED.source,
-                            updated_at = NOW();
-                        """,
-                        [
-                            (
-                                chunk_concept.chunk_id,
-                                chunk_concept.concept_id,
-                                chunk_concept.confidence,
-                                chunk_concept.source,
-                            )
-                            for chunk_concept in chunk_concepts
-                        ],
-                    )
+                    self._upsert_chunk_concepts_cursor(cur, chunk_concepts)
                 conn.commit()
             return Ok(None)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def persist_enrichment_batch(
+        self,
+        document_id: str,
+        lesson_cards: list[StoredLessonCard],
+        quiz_items: list[StoredQuizItem],
+        concepts: list[StoredConcept],
+        chunk_concepts: list[StoredChunkConcept],
+        outbox_event_type: str | None = None,
+        outbox_payload: dict | None = None,
+    ) -> Result[str | None, Exception]:
+        event_id: str | None = None
+        if outbox_event_type is not None:
+            event_id = str(uuid.uuid4())
+            if outbox_payload is None:
+                return Err(
+                    MetadataStoreError("outbox_payload is required when outbox_event_type is provided")
+                )
+
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    self._replace_lesson_cards_cursor(cur, document_id, lesson_cards)
+                    self._replace_quiz_items_cursor(cur, document_id, quiz_items)
+                    self._replace_chunk_concepts_cursor(cur, document_id, chunk_concepts)
+                    self._upsert_concepts_cursor(cur, concepts)
+                    if event_id is not None and outbox_payload is not None:
+                        self._delete_pending_outbox_cursor(cur, document_id, outbox_event_type)
+                        self._append_outbox_event_cursor(
+                            cur=cur,
+                            event_id=event_id,
+                            event_type=outbox_event_type,
+                            aggregate_id=document_id,
+                            payload=outbox_payload,
+                        )
+                conn.commit()
+            return Ok(event_id)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT lc.id,
+                               lc.document_id,
+                               lc.primary_chunk_id,
+                               lc.source_chunk_ids,
+                               lc.heading_path,
+                               lc.title,
+                               lc.bullets,
+                               lc.key_insight,
+                               lc.card_index,
+                               lc.model_id
+                        FROM lesson_cards lc
+                        INNER JOIN chunks_metadata cm
+                          ON cm.chunk_id = lc.primary_chunk_id
+                        WHERE lc.document_id = %s
+                        ORDER BY cm.chunk_index ASC, lc.card_index ASC, lc.id ASC;
+                        """,
+                        (document_id,),
+                    )
+                    rows = cur.fetchall()
+
+            return Ok(
+                [
+                    StoredLessonCard(
+                        card_id=row[0],
+                        document_id=row[1],
+                        primary_chunk_id=row[2],
+                        source_chunk_ids=tuple(row[3] or ()),
+                        heading_path=tuple(row[4] or ()),
+                        title=row[5],
+                        bullets=tuple(row[6] or ()),
+                        key_insight=row[7],
+                        card_index=row[8],
+                        model_id=row[9],
+                    )
+                    for row in rows
+                ]
+            )
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_quiz_items(self, document_id: str) -> Result[list[StoredQuizItem], Exception]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT qi.id,
+                               qi.document_id,
+                               qi.primary_chunk_id,
+                               qi.source_chunk_ids,
+                               qi.heading_path,
+                               qi.question,
+                               qi.choices,
+                               qi.correct_index,
+                               qi.explanation,
+                               qi.difficulty,
+                               qi.question_index,
+                               qi.model_id
+                        FROM quiz_items qi
+                        INNER JOIN chunks_metadata cm
+                          ON cm.chunk_id = qi.primary_chunk_id
+                        WHERE qi.document_id = %s
+                        ORDER BY cm.chunk_index ASC, qi.question_index ASC, qi.id ASC;
+                        """,
+                        (document_id,),
+                    )
+                    rows = cur.fetchall()
+
+            return Ok(
+                [
+                    StoredQuizItem(
+                        question_id=row[0],
+                        document_id=row[1],
+                        primary_chunk_id=row[2],
+                        source_chunk_ids=tuple(row[3] or ()),
+                        heading_path=tuple(row[4] or ()),
+                        question=row[5],
+                        choices=tuple(row[6] or ()),
+                        correct_index=row[7],
+                        explanation=row[8],
+                        difficulty=row[9],
+                        question_index=row[10],
+                        model_id=row[11],
+                    )
+                    for row in rows
+                ]
+            )
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
@@ -774,6 +922,15 @@ class PostgresMetadataStore(IMetadataStore):
             )
             for c in chunks
         ]
+        content_rows = [
+            (
+                c.chunk_id,
+                c.document_id,
+                c.content_text or "",
+                c.enriched_content,
+            )
+            for c in chunks
+        ]
         if not rows:
             return
 
@@ -803,6 +960,231 @@ class PostgresMetadataStore(IMetadataStore):
                 updated_at = NOW();
             """,
             rows,
+        )
+        cur.executemany(
+            """
+            INSERT INTO chunk_contents (
+                chunk_id,
+                document_id,
+                content_text,
+                enriched_content,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (chunk_id)
+            DO UPDATE SET
+                document_id = EXCLUDED.document_id,
+                content_text = EXCLUDED.content_text,
+                enriched_content = EXCLUDED.enriched_content,
+                updated_at = NOW();
+            """,
+            content_rows,
+        )
+
+    def _upsert_concepts_cursor(self, cur, concepts: "list[StoredConcept]") -> None:
+        if not concepts:
+            return
+
+        cur.executemany(
+            """
+            INSERT INTO concepts (
+                id,
+                name,
+                canonical_name,
+                slug,
+                domain,
+                category,
+                language,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (id)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                canonical_name = EXCLUDED.canonical_name,
+                slug = EXCLUDED.slug,
+                domain = EXCLUDED.domain,
+                category = EXCLUDED.category,
+                language = COALESCE(EXCLUDED.language, concepts.language),
+                updated_at = NOW();
+            """,
+            [
+                (
+                    concept.concept_id,
+                    concept.name,
+                    concept.canonical_name,
+                    concept.slug,
+                    concept.domain,
+                    concept.category,
+                    concept.language,
+                )
+                for concept in concepts
+            ],
+        )
+
+    def _upsert_chunk_concepts_cursor(self, cur, chunk_concepts: "list[StoredChunkConcept]") -> None:
+        if not chunk_concepts:
+            return
+
+        cur.executemany(
+            """
+            INSERT INTO chunk_concepts (
+                chunk_id,
+                concept_id,
+                confidence,
+                source,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (chunk_id, concept_id)
+            DO UPDATE SET
+                confidence = EXCLUDED.confidence,
+                source = EXCLUDED.source,
+                updated_at = NOW();
+            """,
+            [
+                (
+                    chunk_concept.chunk_id,
+                    chunk_concept.concept_id,
+                    chunk_concept.confidence,
+                    chunk_concept.source,
+                )
+                for chunk_concept in chunk_concepts
+            ],
+        )
+
+    def _replace_chunk_concepts_cursor(
+        self,
+        cur,
+        document_id: str,
+        chunk_concepts: "list[StoredChunkConcept]",
+    ) -> None:
+        cur.execute(
+            """
+            DELETE FROM chunk_concepts
+            WHERE chunk_id IN (
+                SELECT chunk_id
+                FROM chunks_metadata
+                WHERE document_id = %s
+            );
+            """,
+            (document_id,),
+        )
+        self._upsert_chunk_concepts_cursor(cur, chunk_concepts)
+
+    def _replace_lesson_cards_cursor(
+        self,
+        cur,
+        document_id: str,
+        lesson_cards: "list[StoredLessonCard]",
+    ) -> None:
+        cur.execute(
+            "DELETE FROM lesson_cards WHERE document_id = %s;",
+            (document_id,),
+        )
+        if not lesson_cards:
+            return
+
+        cur.executemany(
+            """
+            INSERT INTO lesson_cards (
+                id,
+                document_id,
+                primary_chunk_id,
+                source_chunk_ids,
+                heading_path,
+                title,
+                bullets,
+                key_insight,
+                card_index,
+                model_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            [
+                (
+                    card.card_id,
+                    card.document_id,
+                    card.primary_chunk_id,
+                    list(card.source_chunk_ids),
+                    list(card.heading_path),
+                    card.title,
+                    list(card.bullets),
+                    card.key_insight,
+                    card.card_index,
+                    card.model_id,
+                )
+                for card in lesson_cards
+            ],
+        )
+
+    def _replace_quiz_items_cursor(
+        self,
+        cur,
+        document_id: str,
+        quiz_items: "list[StoredQuizItem]",
+    ) -> None:
+        cur.execute(
+            "DELETE FROM quiz_items WHERE document_id = %s;",
+            (document_id,),
+        )
+        if not quiz_items:
+            return
+
+        cur.executemany(
+            """
+            INSERT INTO quiz_items (
+                id,
+                document_id,
+                primary_chunk_id,
+                source_chunk_ids,
+                heading_path,
+                question,
+                choices,
+                correct_index,
+                explanation,
+                difficulty,
+                question_index,
+                model_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            [
+                (
+                    item.question_id,
+                    item.document_id,
+                    item.primary_chunk_id,
+                    list(item.source_chunk_ids),
+                    list(item.heading_path),
+                    item.question,
+                    list(item.choices),
+                    item.correct_index,
+                    item.explanation,
+                    item.difficulty,
+                    item.question_index,
+                    item.model_id,
+                )
+                for item in quiz_items
+            ],
+        )
+
+    def _delete_pending_outbox_cursor(
+        self,
+        cur,
+        aggregate_id: str,
+        event_type: str | None,
+    ) -> None:
+        if event_type is None:
+            return
+
+        cur.execute(
+            """
+            DELETE FROM outbox_events
+            WHERE aggregate_id = %s
+              AND event_type = %s
+              AND status = 'PENDING';
+            """,
+            (aggregate_id, event_type),
         )
 
     def _append_outbox_event_cursor(

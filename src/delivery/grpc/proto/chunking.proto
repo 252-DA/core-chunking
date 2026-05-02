@@ -16,6 +16,12 @@ service ChunkingService {
   // Poll trạng thái job async
   rpc GetDocumentStatus(GetDocumentStatusRequest) returns (GetDocumentStatusResponse);
 
+  // Lấy lesson cards đã generate cho document
+  rpc GetCards(GetCardsRequest) returns (GetCardsResponse);
+
+  // Lấy quiz questions đã generate cho document
+  rpc GetQuiz(GetQuizRequest) returns (GetQuizResponse);
+
   // Semantic search qua vector similarity
   rpc Search(SearchRequest) returns (SearchResponse);
 
@@ -76,6 +82,51 @@ message GetDocumentStatusResponse {
   string status      = 2;  // "QUEUED" | "PARSING" | "CHUNKING" | "EMBEDDING" | "UPSERTING" | "DONE" | "ENRICHING" | "ENRICHED" | "ERROR"
   string error_msg   = 3;  // populated khi status == "ERROR"
   string storage_key = 4;  // MinIO key, populated sau khi file được upload
+}
+
+message GetCardsRequest {
+  string document_id = 1;
+}
+
+message LessonCard {
+  string card_id = 1;
+  string chunk_id = 2;
+  repeated string heading_path = 3;
+  string title = 4;
+  repeated string bullets = 5;
+  string key_insight = 6;
+  int32 card_index = 7;
+}
+
+message CardGroup {
+  repeated string heading_path = 1;
+  repeated LessonCard cards = 2;
+}
+
+message GetCardsResponse {
+  string document_id = 1;
+  repeated CardGroup sections = 2;
+  int32 total_cards = 3;
+}
+
+message GetQuizRequest {
+  string document_id = 1;
+}
+
+message QuizItem {
+  string question_id = 1;
+  string chunk_id = 2;
+  string question = 3;
+  repeated string choices = 4;
+  int32 correct_index = 5;
+  string explanation = 6;
+  string difficulty = 7;
+}
+
+message GetQuizResponse {
+  string document_id = 1;
+  repeated QuizItem questions = 2;
+  int32 total_questions = 3;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from src.domain.ports.chunker import IChunker
 from src.domain.ports.embedder import IEmbedder
 from src.domain.ports.file_storage import IFileStorage
 from src.domain.ports.graph_store import IGraphStore
+from src.domain.ports.llm_client import ILLMClient
 from src.domain.ports.metadata_store import IMetadataStore
 from src.domain.ports.parser import IParser
 from src.domain.ports.vector_store import IVectorStore
@@ -41,7 +42,7 @@ class Container:
         self._settings = settings
 
     def close(self) -> None:
-        for component_name in ("graph_store", "metadata_store"):
+        for component_name in ("graph_store", "metadata_store", "llm_client"):
             component = self.__dict__.get(component_name)
             close = getattr(component, "close", None)
             if not callable(close):
@@ -134,6 +135,22 @@ class Container:
         return QdrantAdapter(self._settings.qdrant)
 
     # ------------------------------------------------------------------
+    # LLM Client
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def llm_client(self) -> ILLMClient:
+        provider = self._settings.llm.provider
+        logger.debug("container.init", component="LLMClient", provider=provider)
+
+        if provider == "gemini":
+            from src.adapters.llm.gemini_llm_client import GeminiLLMClient
+
+            return GeminiLLMClient(self._settings.llm)
+
+        raise ValueError(f"Unknown LLM provider: {provider}")
+
+    # ------------------------------------------------------------------
     # Metadata Store (PostgreSQL)
     # ------------------------------------------------------------------
 
@@ -208,6 +225,33 @@ class Container:
 
         logger.debug("container.init", component="DeleteDocumentUseCase")
         return DeleteDocumentUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_document_status_use_case(self):
+        from src.application.use_cases.get_document_status import GetDocumentStatusUseCase
+
+        logger.debug("container.init", component="GetDocumentStatusUseCase")
+        return GetDocumentStatusUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_cards_use_case(self):
+        from src.application.use_cases.get_cards import GetCardsUseCase
+
+        logger.debug("container.init", component="GetCardsUseCase")
+        return GetCardsUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_quiz_use_case(self):
+        from src.application.use_cases.get_quiz import GetQuizUseCase
+
+        logger.debug("container.init", component="GetQuizUseCase")
+        return GetQuizUseCase(
             metadata_store=self.metadata_store,
         )
 

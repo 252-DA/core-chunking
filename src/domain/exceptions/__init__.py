@@ -89,6 +89,10 @@ class GraphStoreError(ChunkingError):
     """Lỗi khi tương tác với graph database (Neo4j)."""
 
 
+class LLMError(ChunkingError):
+    """Lỗi khi tương tác với text generation model/provider."""
+
+
 # ---------------------------------------------------------------------------
 # Use case / orchestration layer
 # ---------------------------------------------------------------------------
@@ -110,5 +114,6 @@ __all__ = [
     "FileStorageError",
     "MetadataStoreError",
     "GraphStoreError",
+    "LLMError",
     "ProcessingError",
 ]

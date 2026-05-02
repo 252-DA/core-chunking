@@ -48,7 +48,7 @@ File → [Preprocessor] → [Parser] → [Chunker] → [Embedder] → [VectorSto
 | `embedder.py` | `IEmbedder` → `Result[list[Embedding]]` | ✅ |
 | `vector_store.py` | `IVectorStore` → `Result[...]` | ✅ |
 | `file_storage.py` | `IFileStorage` → `str/None` | ✅ |
-| `metadata_store.py` | `IMetadataStore` → placeholder Phase 2 | ✅ |
+| `metadata_store.py` | `IMetadataStore` | ✅ |
 
 #### shared/ — Cross-cutting concerns
 | File | Nội dung | Trạng thái |

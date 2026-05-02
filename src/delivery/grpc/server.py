@@ -54,7 +54,9 @@ def serve() -> None:
         search_use_case=container.search_chunks_use_case,
         enqueue_use_case=container.enqueue_document_use_case,
         delete_use_case=container.delete_document_use_case,
-        metadata_store=container.metadata_store,
+        get_document_status_use_case=container.get_document_status_use_case,
+        get_cards_use_case=container.get_cards_use_case,
+        get_quiz_use_case=container.get_quiz_use_case,
     )
 
     # Build server

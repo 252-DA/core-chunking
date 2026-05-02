@@ -8,6 +8,8 @@ from src.domain.ports.metadata_store import (
     StoredChunkMetadata,
     StoredConcept,
     StoredDocumentContext,
+    StoredLessonCard,
+    StoredQuizItem,
 )
 from src.shared.result import Ok, Result
 
@@ -63,6 +65,26 @@ class NoopMetadataStore(IMetadataStore):
         chunk_concepts: list[StoredChunkConcept],
     ) -> Result[None, Exception]:
         return Ok(None)
+
+    def persist_enrichment_batch(
+        self,
+        document_id: str,
+        lesson_cards: list[StoredLessonCard],
+        quiz_items: list[StoredQuizItem],
+        concepts: list[StoredConcept],
+        chunk_concepts: list[StoredChunkConcept],
+        outbox_event_type: str | None = None,
+        outbox_payload: dict | None = None,
+    ) -> Result[str | None, Exception]:
+        if outbox_event_type is None:
+            return Ok(None)
+        return Ok("noop-event")
+
+    def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
+        return Ok([])
+
+    def list_quiz_items(self, document_id: str) -> Result[list[StoredQuizItem], Exception]:
+        return Ok([])
 
     def append_outbox_event(
         self,

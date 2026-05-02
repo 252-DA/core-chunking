@@ -137,6 +137,17 @@ class EmbedderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EMBEDDER_")
 
 
+class LlmConfig(BaseSettings):
+    provider: Literal["gemini"] = "gemini"
+    model: str = "gemini-2.0-flash"
+    api_key: str | None = None
+    temperature: float = 0.2
+    timeout_seconds: int = 60
+    max_section_chars: int = 6000
+
+    model_config = SettingsConfigDict(env_prefix="LLM_")
+
+
 class TracingConfig(BaseSettings):
     enabled: bool = False
     otlp_endpoint: str | None = None  # e.g. "http://localhost:4318/v1/traces"
@@ -169,6 +180,7 @@ class Settings(BaseSettings):
     parser: ParserConfig = Field(default_factory=ParserConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
+    llm: LlmConfig = Field(default_factory=LlmConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
 

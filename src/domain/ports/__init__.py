@@ -9,6 +9,7 @@ from src.domain.ports.graph_store import (
     IGraphStore,
 )
 from src.domain.ports.job_queue import DocumentJobPayload, EnrichmentJobPayload, IJobQueue
+from src.domain.ports.llm_client import ILLMClient
 from src.domain.ports.metadata_store import (
     DocumentFilter,
     IMetadataStore,
@@ -18,6 +19,8 @@ from src.domain.ports.metadata_store import (
     StoredChunkMetadata,
     StoredConcept,
     StoredDocumentContext,
+    StoredLessonCard,
+    StoredQuizItem,
 )
 from src.domain.ports.parser import IParser
 from src.domain.ports.preprocessor import IPreprocessor
@@ -32,11 +35,14 @@ __all__ = [
     "IFileStorage",
     "IMetadataStore",
     "IGraphStore",
+    "ILLMClient",
     "DocumentFilter",
     "StoredChunkMetadata",
     "StoredDocumentContext",
     "StoredConcept",
     "StoredChunkConcept",
+    "StoredLessonCard",
+    "StoredQuizItem",
     "OutboxEvent",
     "IngestionStatus",
     "GraphChunk",

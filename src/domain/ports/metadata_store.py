@@ -38,6 +38,8 @@ class StoredChunkMetadata:
     page_number: int | None = None
     content_length: int = 0
     language: str | None = None
+    content_text: str | None = None
+    enriched_content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,36 @@ class StoredChunkConcept:
     concept_id: str
     confidence: float = 1.0
     source: str = "heading"
+
+
+@dataclass(frozen=True)
+class StoredLessonCard:
+    card_id: str
+    document_id: str
+    primary_chunk_id: str
+    source_chunk_ids: tuple[str, ...] = ()
+    heading_path: tuple[str, ...] = ()
+    title: str = ""
+    bullets: tuple[str, ...] = ()
+    key_insight: str | None = None
+    card_index: int = 0
+    model_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StoredQuizItem:
+    question_id: str
+    document_id: str
+    primary_chunk_id: str
+    source_chunk_ids: tuple[str, ...] = ()
+    heading_path: tuple[str, ...] = ()
+    question: str = ""
+    choices: tuple[str, ...] = ()
+    correct_index: int = 0
+    explanation: str | None = None
+    difficulty: str = "medium"
+    question_index: int = 0
+    model_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +187,40 @@ class IMetadataStore(ABC):
         chunk_concepts: list[StoredChunkConcept],
     ) -> Result[None, Exception]:
         """Bulk upsert chunk-concept mentions."""
+        ...
+
+    @abstractmethod
+    def persist_enrichment_batch(
+        self,
+        document_id: str,
+        lesson_cards: list[StoredLessonCard],
+        quiz_items: list[StoredQuizItem],
+        concepts: list[StoredConcept],
+        chunk_concepts: list[StoredChunkConcept],
+        outbox_event_type: str | None = None,
+        outbox_payload: dict | None = None,
+    ) -> Result[str | None, Exception]:
+        """
+        Replace generated content for one document and optionally append one outbox event
+        in the same transaction. Returns the appended event_id, or None when no outbox
+        event is written.
+        """
+        ...
+
+    @abstractmethod
+    def list_lesson_cards(
+        self,
+        document_id: str,
+    ) -> Result[list[StoredLessonCard], Exception]:
+        """List generated lesson cards for one document in stable display order."""
+        ...
+
+    @abstractmethod
+    def list_quiz_items(
+        self,
+        document_id: str,
+    ) -> Result[list[StoredQuizItem], Exception]:
+        """List generated quiz items for one document in stable display order."""
         ...
 
     @abstractmethod

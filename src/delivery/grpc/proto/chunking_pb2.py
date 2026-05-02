@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x63hunking.proto\x12\x08\x63hunking\"\xd8\x01\n\x16ProcessDocumentRequest\x12\x11\n\tfile_data\x18\x01 \x01(\x0c\x12\x11\n\tfile_name\x18\x02 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x03 \x01(\t\x12\x10\n\x08language\x18\x04 \x01(\t\x12@\n\x08metadata\x18\x05 \x03(\x0b\x32..chunking.ProcessDocumentRequest.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x90\x01\n\x0c\x43hunkSummary\x12\x10\n\x08\x63hunk_id\x18\x01 \x01(\t\x12\x14\n\x0cheading_path\x18\x02 \x03(\t\x12\x17\n\x0f\x63ontent_preview\x18\x03 \x01(\t\x12\x16\n\x0e\x63ontent_length\x18\x04 \x01(\x05\x12\x13\n\x0bpage_number\x18\x05 \x01(\x05\x12\x12\n\nhas_images\x18\x06 \x01(\x08\"\xc5\x01\n\x17ProcessDocumentResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x15\n\rdocument_name\x18\x02 \x01(\t\x12\x10\n\x08\x64oc_type\x18\x03 \x01(\t\x12\x13\n\x0b\x63hunk_count\x18\x04 \x01(\x05\x12&\n\x06\x63hunks\x18\x05 \x03(\x0b\x32\x16.chunking.ChunkSummary\x12\x13\n\x0bstorage_key\x18\x06 \x01(\t\x12\x1a\n\x12processing_time_ms\x18\x07 \x01(\x02\"N\n\x17\x45nqueueDocumentResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0e\n\x06job_id\x18\x03 \x01(\t\"/\n\x18GetDocumentStatusRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\"h\n\x19GetDocumentStatusResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x11\n\terror_msg\x18\x03 \x01(\t\x12\x13\n\x0bstorage_key\x18\x04 \x01(\t\"\xa6\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\r\n\x05top_k\x18\x02 \x01(\x05\x12\x17\n\x0fscore_threshold\x18\x03 \x01(\x02\x12\x11\n\tdoc_types\x18\x04 \x03(\t\x12\x14\n\x0c\x64ocument_ids\x18\x05 \x03(\t\x12\x10\n\x08language\x18\x06 \x01(\t\x12\x11\n\tcourse_id\x18\x07 \x01(\t\x12\x10\n\x08owner_id\x18\x08 \x01(\t\"\xbb\x01\n\x10SearchResultItem\x12\x10\n\x08\x63hunk_id\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\x12\x15\n\rdocument_name\x18\x03 \x01(\t\x12\x10\n\x08\x64oc_type\x18\x04 \x01(\t\x12\x14\n\x0cheading_path\x18\x05 \x03(\t\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\r\n\x05score\x18\x07 \x01(\x02\x12\x0c\n\x04rank\x18\x08 \x01(\x05\x12\x13\n\x0bpage_number\x18\t \x01(\x05\"y\n\x0eSearchResponse\x12\r\n\x05query\x18\x01 \x01(\t\x12+\n\x07results\x18\x02 \x03(\x0b\x32\x1a.chunking.SearchResultItem\x12\x13\n\x0btotal_found\x18\x03 \x01(\x05\x12\x16\n\x0esearch_time_ms\x18\x04 \x01(\x02\",\n\x15\x44\x65leteDocumentRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\":\n\x16\x44\x65leteDocumentResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x14\n\x12HealthCheckRequest\"6\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t2\xfd\x03\n\x0f\x43hunkingService\x12V\n\x0fProcessDocument\x12 .chunking.ProcessDocumentRequest\x1a!.chunking.ProcessDocumentResponse\x12V\n\x0f\x45nqueueDocument\x12 .chunking.ProcessDocumentRequest\x1a!.chunking.EnqueueDocumentResponse\x12\\\n\x11GetDocumentStatus\x12\".chunking.GetDocumentStatusRequest\x1a#.chunking.GetDocumentStatusResponse\x12;\n\x06Search\x12\x17.chunking.SearchRequest\x1a\x18.chunking.SearchResponse\x12S\n\x0e\x44\x65leteDocument\x12\x1f.chunking.DeleteDocumentRequest\x1a .chunking.DeleteDocumentResponse\x12J\n\x0bHealthCheck\x12\x1c.chunking.HealthCheckRequest\x1a\x1d.chunking.HealthCheckResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x63hunking.proto\x12\x08\x63hunking\"\xd8\x01\n\x16ProcessDocumentRequest\x12\x11\n\tfile_data\x18\x01 \x01(\x0c\x12\x11\n\tfile_name\x18\x02 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x03 \x01(\t\x12\x10\n\x08language\x18\x04 \x01(\t\x12@\n\x08metadata\x18\x05 \x03(\x0b\x32..chunking.ProcessDocumentRequest.MetadataEntry\x1a/\n\rMetadataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x90\x01\n\x0c\x43hunkSummary\x12\x10\n\x08\x63hunk_id\x18\x01 \x01(\t\x12\x14\n\x0cheading_path\x18\x02 \x03(\t\x12\x17\n\x0f\x63ontent_preview\x18\x03 \x01(\t\x12\x16\n\x0e\x63ontent_length\x18\x04 \x01(\x05\x12\x13\n\x0bpage_number\x18\x05 \x01(\x05\x12\x12\n\nhas_images\x18\x06 \x01(\x08\"\xc5\x01\n\x17ProcessDocumentResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x15\n\rdocument_name\x18\x02 \x01(\t\x12\x10\n\x08\x64oc_type\x18\x03 \x01(\t\x12\x13\n\x0b\x63hunk_count\x18\x04 \x01(\x05\x12&\n\x06\x63hunks\x18\x05 \x03(\x0b\x32\x16.chunking.ChunkSummary\x12\x13\n\x0bstorage_key\x18\x06 \x01(\t\x12\x1a\n\x12processing_time_ms\x18\x07 \x01(\x02\"N\n\x17\x45nqueueDocumentResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0e\n\x06job_id\x18\x03 \x01(\t\"/\n\x18GetDocumentStatusRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\"h\n\x19GetDocumentStatusResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x11\n\terror_msg\x18\x03 \x01(\t\x12\x13\n\x0bstorage_key\x18\x04 \x01(\t\"&\n\x0fGetCardsRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\"\x8e\x01\n\nLessonCard\x12\x0f\n\x07\x63\x61rd_id\x18\x01 \x01(\t\x12\x10\n\x08\x63hunk_id\x18\x02 \x01(\t\x12\x14\n\x0cheading_path\x18\x03 \x03(\t\x12\r\n\x05title\x18\x04 \x01(\t\x12\x0f\n\x07\x62ullets\x18\x05 \x03(\t\x12\x13\n\x0bkey_insight\x18\x06 \x01(\t\x12\x12\n\ncard_index\x18\x07 \x01(\x05\"F\n\tCardGroup\x12\x14\n\x0cheading_path\x18\x01 \x03(\t\x12#\n\x05\x63\x61rds\x18\x02 \x03(\x0b\x32\x14.chunking.LessonCard\"c\n\x10GetCardsResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12%\n\x08sections\x18\x02 \x03(\x0b\x32\x13.chunking.CardGroup\x12\x13\n\x0btotal_cards\x18\x03 \x01(\x05\"%\n\x0eGetQuizRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\"\x94\x01\n\x08QuizItem\x12\x13\n\x0bquestion_id\x18\x01 \x01(\t\x12\x10\n\x08\x63hunk_id\x18\x02 \x01(\t\x12\x10\n\x08question\x18\x03 \x01(\t\x12\x0f\n\x07\x63hoices\x18\x04 \x03(\t\x12\x15\n\rcorrect_index\x18\x05 \x01(\x05\x12\x13\n\x0b\x65xplanation\x18\x06 \x01(\t\x12\x12\n\ndifficulty\x18\x07 \x01(\t\"f\n\x0fGetQuizResponse\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\x12%\n\tquestions\x18\x02 \x03(\x0b\x32\x12.chunking.QuizItem\x12\x17\n\x0ftotal_questions\x18\x03 \x01(\x05\"\xa6\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\r\n\x05top_k\x18\x02 \x01(\x05\x12\x17\n\x0fscore_threshold\x18\x03 \x01(\x02\x12\x11\n\tdoc_types\x18\x04 \x03(\t\x12\x14\n\x0c\x64ocument_ids\x18\x05 \x03(\t\x12\x10\n\x08language\x18\x06 \x01(\t\x12\x11\n\tcourse_id\x18\x07 \x01(\t\x12\x10\n\x08owner_id\x18\x08 \x01(\t\"\xbb\x01\n\x10SearchResultItem\x12\x10\n\x08\x63hunk_id\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\x12\x15\n\rdocument_name\x18\x03 \x01(\t\x12\x10\n\x08\x64oc_type\x18\x04 \x01(\t\x12\x14\n\x0cheading_path\x18\x05 \x03(\t\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\r\n\x05score\x18\x07 \x01(\x02\x12\x0c\n\x04rank\x18\x08 \x01(\x05\x12\x13\n\x0bpage_number\x18\t \x01(\x05\"y\n\x0eSearchResponse\x12\r\n\x05query\x18\x01 \x01(\t\x12+\n\x07results\x18\x02 \x03(\x0b\x32\x1a.chunking.SearchResultItem\x12\x13\n\x0btotal_found\x18\x03 \x01(\x05\x12\x16\n\x0esearch_time_ms\x18\x04 \x01(\x02\",\n\x15\x44\x65leteDocumentRequest\x12\x13\n\x0b\x64ocument_id\x18\x01 \x01(\t\":\n\x16\x44\x65leteDocumentResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x14\n\x12HealthCheckRequest\"6\n\x13HealthCheckResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t2\x80\x05\n\x0f\x43hunkingService\x12V\n\x0fProcessDocument\x12 .chunking.ProcessDocumentRequest\x1a!.chunking.ProcessDocumentResponse\x12V\n\x0f\x45nqueueDocument\x12 .chunking.ProcessDocumentRequest\x1a!.chunking.EnqueueDocumentResponse\x12\\\n\x11GetDocumentStatus\x12\".chunking.GetDocumentStatusRequest\x1a#.chunking.GetDocumentStatusResponse\x12\x41\n\x08GetCards\x12\x19.chunking.GetCardsRequest\x1a\x1a.chunking.GetCardsResponse\x12>\n\x07GetQuiz\x12\x18.chunking.GetQuizRequest\x1a\x19.chunking.GetQuizResponse\x12;\n\x06Search\x12\x17.chunking.SearchRequest\x1a\x18.chunking.SearchResponse\x12S\n\x0e\x44\x65leteDocument\x12\x1f.chunking.DeleteDocumentRequest\x1a .chunking.DeleteDocumentResponse\x12J\n\x0bHealthCheck\x12\x1c.chunking.HealthCheckRequest\x1a\x1d.chunking.HealthCheckResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -47,20 +47,34 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETDOCUMENTSTATUSREQUEST']._serialized_end=721
   _globals['_GETDOCUMENTSTATUSRESPONSE']._serialized_start=723
   _globals['_GETDOCUMENTSTATUSRESPONSE']._serialized_end=827
-  _globals['_SEARCHREQUEST']._serialized_start=830
-  _globals['_SEARCHREQUEST']._serialized_end=996
-  _globals['_SEARCHRESULTITEM']._serialized_start=999
-  _globals['_SEARCHRESULTITEM']._serialized_end=1186
-  _globals['_SEARCHRESPONSE']._serialized_start=1188
-  _globals['_SEARCHRESPONSE']._serialized_end=1309
-  _globals['_DELETEDOCUMENTREQUEST']._serialized_start=1311
-  _globals['_DELETEDOCUMENTREQUEST']._serialized_end=1355
-  _globals['_DELETEDOCUMENTRESPONSE']._serialized_start=1357
-  _globals['_DELETEDOCUMENTRESPONSE']._serialized_end=1415
-  _globals['_HEALTHCHECKREQUEST']._serialized_start=1417
-  _globals['_HEALTHCHECKREQUEST']._serialized_end=1437
-  _globals['_HEALTHCHECKRESPONSE']._serialized_start=1439
-  _globals['_HEALTHCHECKRESPONSE']._serialized_end=1493
-  _globals['_CHUNKINGSERVICE']._serialized_start=1496
-  _globals['_CHUNKINGSERVICE']._serialized_end=2005
+  _globals['_GETCARDSREQUEST']._serialized_start=829
+  _globals['_GETCARDSREQUEST']._serialized_end=867
+  _globals['_LESSONCARD']._serialized_start=870
+  _globals['_LESSONCARD']._serialized_end=1012
+  _globals['_CARDGROUP']._serialized_start=1014
+  _globals['_CARDGROUP']._serialized_end=1084
+  _globals['_GETCARDSRESPONSE']._serialized_start=1086
+  _globals['_GETCARDSRESPONSE']._serialized_end=1185
+  _globals['_GETQUIZREQUEST']._serialized_start=1187
+  _globals['_GETQUIZREQUEST']._serialized_end=1224
+  _globals['_QUIZITEM']._serialized_start=1227
+  _globals['_QUIZITEM']._serialized_end=1375
+  _globals['_GETQUIZRESPONSE']._serialized_start=1377
+  _globals['_GETQUIZRESPONSE']._serialized_end=1479
+  _globals['_SEARCHREQUEST']._serialized_start=1482
+  _globals['_SEARCHREQUEST']._serialized_end=1648
+  _globals['_SEARCHRESULTITEM']._serialized_start=1651
+  _globals['_SEARCHRESULTITEM']._serialized_end=1838
+  _globals['_SEARCHRESPONSE']._serialized_start=1840
+  _globals['_SEARCHRESPONSE']._serialized_end=1961
+  _globals['_DELETEDOCUMENTREQUEST']._serialized_start=1963
+  _globals['_DELETEDOCUMENTREQUEST']._serialized_end=2007
+  _globals['_DELETEDOCUMENTRESPONSE']._serialized_start=2009
+  _globals['_DELETEDOCUMENTRESPONSE']._serialized_end=2067
+  _globals['_HEALTHCHECKREQUEST']._serialized_start=2069
+  _globals['_HEALTHCHECKREQUEST']._serialized_end=2089
+  _globals['_HEALTHCHECKRESPONSE']._serialized_start=2091
+  _globals['_HEALTHCHECKRESPONSE']._serialized_end=2145
+  _globals['_CHUNKINGSERVICE']._serialized_start=2148
+  _globals['_CHUNKINGSERVICE']._serialized_end=2788
 # @@protoc_insertion_point(module_scope)

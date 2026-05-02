@@ -261,6 +261,8 @@ class PipelineCore:
                 page_number=chunk.metadata.page_number,
                 content_length=len(chunk.content),
                 language=chunk.metadata.language,
+                content_text=chunk.content,
+                enriched_content=chunk.enriched_content,
             )
             for chunk in chunks
         ]

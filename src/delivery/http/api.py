@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -16,14 +17,23 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from src.application.dto.document_dto import ProcessDocumentRequest, ProcessDocumentResponse
+from src.application.dto.generation_dto import CardsResponse, DocumentStatusResponse, QuizResponse
 from src.application.dto.search_dto import SearchRequest, SearchResponse
 from src.application.use_cases.delete_document import (
     DeleteDocumentRequest,
     DeleteDocumentUseCase,
 )
+from src.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
+from src.application.use_cases.get_document_status import (
+    GetDocumentStatusRequest,
+    GetDocumentStatusUseCase,
+)
+from src.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
 from src.application.use_cases.process_document import ProcessDocumentUseCase
 from src.application.use_cases.search_chunks import SearchChunksUseCase
+from src.domain.entities.document import DocumentType, ElementType
 from src.domain.exceptions import ChunkingError, UnsupportedFileTypeError
+from src.domain.ports.parser import IParser
 from src.infrastructure.config import get_settings
 from src.infrastructure.container import Container, get_container
 from src.shared.logger import get_logger, setup_logging
@@ -45,6 +55,45 @@ class DeleteDocumentHttpResponse(BaseModel):
     document_id: str
     success: bool
     message: str
+
+
+class SectionInspect(BaseModel):
+    index: int
+    element_type: str
+    heading: str | None
+    heading_level: int
+    page_number: int | None
+    content_length: int
+    content_preview: str
+    has_images: bool
+
+
+class ParseStats(BaseModel):
+    total_sections: int
+    page_count: int
+    element_counts: dict[str, int]
+    image_count: int
+    total_content_length: int
+    headings_outline: list[str]
+    language: str | None
+    parser_used: str
+    parse_duration_ms: float
+
+
+class ParseInspectResponse(BaseModel):
+    file_name: str
+    file_size_bytes: int
+    stats: ParseStats
+    sections: list[SectionInspect]
+
+
+_EXT_TO_DOC_TYPE: dict[str, DocumentType] = {
+    ".pdf": DocumentType.PDF,
+    ".docx": DocumentType.DOCX,
+    ".pptx": DocumentType.PPTX,
+    ".md": DocumentType.MARKDOWN,
+    ".markdown": DocumentType.MARKDOWN,
+}
 
 
 def _normalize_optional(value: str | None) -> str | None:
@@ -178,6 +227,30 @@ def _get_delete_use_case(
     return container.delete_document_use_case
 
 
+def _get_status_use_case(
+    container: Container = Depends(_get_container),
+) -> GetDocumentStatusUseCase:
+    return container.get_document_status_use_case
+
+
+def _get_cards_use_case(
+    container: Container = Depends(_get_container),
+) -> GetCardsUseCase:
+    return container.get_cards_use_case
+
+
+def _get_quiz_use_case(
+    container: Container = Depends(_get_container),
+) -> GetQuizUseCase:
+    return container.get_quiz_use_case
+
+
+def _get_parsers(
+    container: Container = Depends(_get_container),
+) -> list[IParser]:
+    return container.parsers
+
+
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/docs")
@@ -191,6 +264,125 @@ def root() -> RedirectResponse:
 )
 def health_check() -> HealthResponse:
     return HealthResponse()
+
+
+@app.post(
+    "/documents/inspect",
+    response_model=ParseInspectResponse,
+    tags=["inspect"],
+    summary="Inspect parse quality — no storage, no chunking",
+    description=(
+        "Upload a document và xem raw parser output: sections, element types, headings, "
+        "content previews. Không lưu DB, không chunk, không embed. "
+        "Dùng để kiểm tra chất lượng parse trước khi full processing."
+    ),
+)
+async def inspect_document(
+    file: Annotated[
+        UploadFile,
+        File(description="PDF, DOCX, PPTX, hoặc Markdown để inspect."),
+    ],
+    preview_length: Annotated[
+        int,
+        Form(description="Số ký tự preview mỗi section (default 300, max 2000)."),
+    ] = 300,
+    parsers: list[IParser] = Depends(_get_parsers),
+) -> ParseInspectResponse:
+    original_file_name = _normalize_optional(file.filename)
+    if original_file_name is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="file name is required",
+        )
+
+    file_data = await file.read()
+    if not file_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="uploaded file is empty",
+        )
+
+    preview_length = max(50, min(preview_length, 2000))
+
+    suffix = Path(original_file_name).suffix.lower()
+    doc_type = _EXT_TO_DOC_TYPE.get(suffix)
+    if doc_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type: '{suffix}'. Supported: {sorted(_EXT_TO_DOC_TYPE)}",
+        )
+
+    parser = next((p for p in parsers if p.supports(doc_type)), None)
+    if parser is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No parser registered for {doc_type.value}",
+        )
+
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(file_data)
+            tmp_path = Path(tmp.name)
+
+        t0 = time.perf_counter()
+        result = parser.parse(tmp_path)
+        parse_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+        if result.is_err():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Parse failed: {result.error}",
+            )
+
+        parsed = result.unwrap()
+
+    finally:
+        await file.close()
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink()
+
+    element_counts: dict[str, int] = {}
+    for s in parsed.sections:
+        key = s.element_type.value
+        element_counts[key] = element_counts.get(key, 0) + 1
+
+    headings_outline = [
+        f"{'  ' * max(0, s.heading_level - 1)}{'#' * s.heading_level} {s.content}"
+        for s in parsed.sections
+        if s.element_type == ElementType.HEADING
+    ]
+
+    section_inspects = [
+        SectionInspect(
+            index=i,
+            element_type=s.element_type.value,
+            heading=s.heading,
+            heading_level=s.heading_level,
+            page_number=s.page_number,
+            content_length=len(s.content),
+            content_preview=s.content[:preview_length],
+            has_images=bool(s.images),
+        )
+        for i, s in enumerate(parsed.sections)
+    ]
+
+    return ParseInspectResponse(
+        file_name=original_file_name,
+        file_size_bytes=len(file_data),
+        stats=ParseStats(
+            total_sections=len(parsed.sections),
+            page_count=parsed.page_count,
+            element_counts=element_counts,
+            image_count=len(parsed.images),
+            total_content_length=parsed.total_content_length,
+            headings_outline=headings_outline,
+            language=parsed.language,
+            parser_used=type(parser).__name__,
+            parse_duration_ms=parse_ms,
+        ),
+        sections=section_inspects,
+    )
 
 
 @app.post(
@@ -274,6 +466,75 @@ async def process_document(
         await file.close()
         if tmp_path and tmp_path.exists():
             tmp_path.unlink()
+
+
+@app.get(
+    "/documents/{document_id}/status",
+    response_model=DocumentStatusResponse,
+    tags=["documents"],
+    summary="Get ingestion status for one document",
+)
+def get_document_status(
+    document_id: str,
+    use_case: GetDocumentStatusUseCase = Depends(_get_status_use_case),
+) -> DocumentStatusResponse:
+    result = use_case.execute(GetDocumentStatusRequest(document_id=document_id))
+    if result.is_err():
+        _raise_delivery_error(result.error)
+
+    response = result.unwrap()
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"document not found: {document_id}",
+        )
+    return response
+
+
+@app.get(
+    "/documents/{document_id}/cards",
+    response_model=CardsResponse,
+    tags=["documents"],
+    summary="Get generated lesson cards for one document",
+)
+def get_document_cards(
+    document_id: str,
+    use_case: GetCardsUseCase = Depends(_get_cards_use_case),
+) -> CardsResponse:
+    result = use_case.execute(GetCardsRequest(document_id=document_id))
+    if result.is_err():
+        _raise_delivery_error(result.error)
+
+    response = result.unwrap()
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"document not found: {document_id}",
+        )
+    return response
+
+
+@app.get(
+    "/documents/{document_id}/quiz",
+    response_model=QuizResponse,
+    tags=["documents"],
+    summary="Get generated quiz items for one document",
+)
+def get_document_quiz(
+    document_id: str,
+    use_case: GetQuizUseCase = Depends(_get_quiz_use_case),
+) -> QuizResponse:
+    result = use_case.execute(GetQuizRequest(document_id=document_id))
+    if result.is_err():
+        _raise_delivery_error(result.error)
+
+    response = result.unwrap()
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"document not found: {document_id}",
+        )
+    return response
 
 
 @app.post(

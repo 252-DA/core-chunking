@@ -125,6 +125,8 @@ def sample_stored_chunk_metadata(sample_chunk: Chunk) -> StoredChunkMetadata:
         page_number=sample_chunk.metadata.page_number,
         content_length=len(sample_chunk.content),
         language=sample_chunk.metadata.language,
+        content_text=sample_chunk.content,
+        enriched_content=sample_chunk.enriched_content,
     )
 
 
@@ -221,6 +223,9 @@ def mock_metadata_store(
     store.list_chunks.return_value = Ok([sample_stored_chunk_metadata])
     store.upsert_concepts.return_value = Ok(None)
     store.upsert_chunk_concepts.return_value = Ok(None)
+    store.persist_enrichment_batch.return_value = Ok("event-001")
+    store.list_lesson_cards.return_value = Ok([])
+    store.list_quiz_items.return_value = Ok([])
     store.append_outbox_event.return_value = Ok("event-001")
     store.fetch_pending_outbox.return_value = Ok([])
     store.mark_outbox_done.return_value = Ok(None)

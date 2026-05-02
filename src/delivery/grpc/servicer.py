@@ -24,11 +24,16 @@ from src.application.use_cases.enqueue_document import (
     EnqueueDocumentRequest,
     EnqueueDocumentUseCase,
 )
+from src.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
+from src.application.use_cases.get_document_status import (
+    GetDocumentStatusRequest,
+    GetDocumentStatusUseCase,
+)
+from src.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
 from src.application.use_cases.process_document import ProcessDocumentUseCase
 from src.application.use_cases.search_chunks import SearchChunksUseCase
 from src.delivery.grpc.proto import chunking_pb2, chunking_pb2_grpc
 from src.domain.entities.document import DocumentType
-from src.domain.ports.metadata_store import IMetadataStore
 from src.shared.logger import get_logger
 from src.shared.tracing import get_tracer
 
@@ -45,13 +50,17 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         search_use_case: SearchChunksUseCase,
         enqueue_use_case: EnqueueDocumentUseCase,
         delete_use_case: DeleteDocumentUseCase,
-        metadata_store: IMetadataStore,
+        get_document_status_use_case: GetDocumentStatusUseCase,
+        get_cards_use_case: GetCardsUseCase,
+        get_quiz_use_case: GetQuizUseCase,
     ) -> None:
         self._process = process_use_case
         self._search = search_use_case
         self._enqueue = enqueue_use_case
         self._delete = delete_use_case
-        self._metadata_store = metadata_store
+        self._get_document_status = get_document_status_use_case
+        self._get_cards = get_cards_use_case
+        self._get_quiz = get_quiz_use_case
 
     # ------------------------------------------------------------------
     # ProcessDocument (sync)
@@ -287,21 +296,102 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         if not request.document_id:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "document_id is required")
 
-        result = self._metadata_store.get_document_status(request.document_id)
+        result = self._get_document_status.execute(
+            GetDocumentStatusRequest(document_id=request.document_id)
+        )
 
         if result.is_err():
             context.abort(grpc.StatusCode.INTERNAL, str(result.error))
 
-        status_tuple = result.unwrap()
-        if status_tuple is None:
+        status_response = result.unwrap()
+        if status_response is None:
             context.abort(grpc.StatusCode.NOT_FOUND, f"Document {request.document_id} not found")
 
-        status, error_msg, storage_key = status_tuple
         return chunking_pb2.GetDocumentStatusResponse(
             document_id=request.document_id,
-            status=status.value,
-            error_msg=error_msg or "",
-            storage_key=storage_key or "",
+            status=status_response.status.value,
+            error_msg=status_response.error_msg or "",
+            storage_key=status_response.storage_key or "",
+        )
+
+    # ------------------------------------------------------------------
+    # GetCards
+    # ------------------------------------------------------------------
+
+    def GetCards(
+        self,
+        request: chunking_pb2.GetCardsRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.GetCardsResponse:
+        if not request.document_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "document_id is required")
+
+        result = self._get_cards.execute(GetCardsRequest(document_id=request.document_id))
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        response = result.unwrap()
+        if response is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"Document {request.document_id} not found")
+
+        return chunking_pb2.GetCardsResponse(
+            document_id=response.document_id,
+            sections=[
+                chunking_pb2.CardGroup(
+                    heading_path=section.heading_path,
+                    cards=[
+                        chunking_pb2.LessonCard(
+                            card_id=card.card_id,
+                            chunk_id=card.chunk_id,
+                            heading_path=card.heading_path,
+                            title=card.title,
+                            bullets=card.bullets,
+                            key_insight=card.key_insight or "",
+                            card_index=card.card_index,
+                        )
+                        for card in section.cards
+                    ],
+                )
+                for section in response.sections
+            ],
+            total_cards=response.total_cards,
+        )
+
+    # ------------------------------------------------------------------
+    # GetQuiz
+    # ------------------------------------------------------------------
+
+    def GetQuiz(
+        self,
+        request: chunking_pb2.GetQuizRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.GetQuizResponse:
+        if not request.document_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "document_id is required")
+
+        result = self._get_quiz.execute(GetQuizRequest(document_id=request.document_id))
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        response = result.unwrap()
+        if response is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"Document {request.document_id} not found")
+
+        return chunking_pb2.GetQuizResponse(
+            document_id=response.document_id,
+            questions=[
+                chunking_pb2.QuizItem(
+                    question_id=question.question_id,
+                    chunk_id=question.chunk_id,
+                    question=question.question,
+                    choices=question.choices,
+                    correct_index=question.correct_index,
+                    explanation=question.explanation or "",
+                    difficulty=question.difficulty,
+                )
+                for question in response.questions
+            ],
+            total_questions=response.total_questions,
         )
 
     # ------------------------------------------------------------------
