@@ -262,7 +262,7 @@ class PipelineCore:
                 content_length=len(chunk.content),
                 language=chunk.metadata.language,
                 content_text=chunk.content,
-                enriched_content=chunk.enriched_content,
+                embedding_input=chunk.embedding_input,
             )
             for chunk in chunks
         ]

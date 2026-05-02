@@ -39,7 +39,7 @@ class StoredChunkMetadata:
     content_length: int = 0
     language: str | None = None
     content_text: str | None = None
-    enriched_content: str | None = None
+    embedding_input: str | None = None
 
 
 @dataclass(frozen=True)

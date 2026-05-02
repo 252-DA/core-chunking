@@ -34,9 +34,9 @@ class IEmbedder(ABC):
     def embed_chunks(self, chunks: list[Chunk]) -> Result[list[Embedding], Exception]:
         """
         Convenience method: embed list[Chunk] → list[Embedding].
-        Dùng enriched_content nếu có, fallback sang content.
+        Dùng embedding_input đã được enrich với heading context.
         """
-        texts = [c.enriched_content or c.content for c in chunks]
+        texts = [c.embedding_input for c in chunks]
         result = self.embed(texts)
         if result.is_err():
             return result

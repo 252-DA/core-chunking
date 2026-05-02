@@ -7,6 +7,7 @@ Design:
   - Collection tự tạo nếu chưa tồn tại
   - SearchFilter → Qdrant filter conditions
 """
+import hashlib
 import time
 import uuid
 from functools import cached_property
@@ -41,8 +42,9 @@ _F_HEADING_LEVEL  = "heading_level"
 _F_PAGE_NUMBER    = "page_number"
 _F_LANGUAGE       = "language"
 _F_CONTENT        = "content"
+_F_CONTENT_HASH   = "content_hash"
 _F_IMAGES         = "images"
-_F_ENRICHED       = "enriched_content"
+_F_ENRICHED       = "embedding_input"
 
 
 class QdrantAdapter(IVectorStore):
@@ -242,23 +244,25 @@ class QdrantAdapter(IVectorStore):
             _F_DOCUMENT_NAME: chunk.metadata.document_name,
             _F_COURSE_ID:     chunk.metadata.course_id,
             _F_OWNER_ID:      chunk.metadata.owner_id,
-            _F_DOC_TYPE:      chunk.metadata.doc_type.value,
+            _F_DOC_TYPE:      chunk.metadata.document_type.value,
             _F_CHUNK_INDEX:   chunk.metadata.chunk_index,
             _F_HEADING_PATH:  list(chunk.metadata.heading_path),
             _F_HEADING_LEVEL: chunk.metadata.heading_level,
             _F_PAGE_NUMBER:   chunk.metadata.page_number,
             _F_LANGUAGE:      chunk.metadata.language,
             _F_CONTENT:       chunk.content,
+            _F_CONTENT_HASH:  chunk.content_hash,
             _F_IMAGES:        chunk.images,
-            _F_ENRICHED:      chunk.enriched_content,
+            _F_ENRICHED:      chunk.embedding_input,
         }
 
     def _payload_to_chunk(self, payload: dict) -> Chunk:
         """Qdrant payload → Chunk (reconstruct từ stored data)."""
+        content = payload[_F_CONTENT]
         metadata = ChunkMetadata(
             document_id=payload[_F_DOCUMENT_ID],
             document_name=payload[_F_DOCUMENT_NAME],
-            doc_type=DocumentType(payload[_F_DOC_TYPE]),
+            document_type=DocumentType(payload[_F_DOC_TYPE]),
             chunk_index=payload[_F_CHUNK_INDEX],
             heading_path=tuple(payload.get(_F_HEADING_PATH, [])),
             heading_level=payload.get(_F_HEADING_LEVEL, 0),
@@ -269,10 +273,11 @@ class QdrantAdapter(IVectorStore):
         )
         return Chunk(
             id=payload[_F_CHUNK_ID],
-            content=payload[_F_CONTENT],
+            content=content,
+            embedding_input=payload.get(_F_ENRICHED) or content,
+            content_hash=payload.get(_F_CONTENT_HASH) or hashlib.md5(content.encode()).hexdigest(),
             metadata=metadata,
             images=payload.get(_F_IMAGES, []),
-            enriched_content=payload.get(_F_ENRICHED),
         )
 
     # ------------------------------------------------------------------

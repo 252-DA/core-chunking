@@ -84,7 +84,7 @@ class SearchChunksUseCase:
                             chunk_id=r.chunk.id,
                             document_id=r.chunk.metadata.document_id,
                             document_name=r.chunk.metadata.document_name,
-                            doc_type=r.chunk.metadata.doc_type,
+                            doc_type=r.chunk.metadata.document_type,
                             heading_path=list(r.chunk.metadata.heading_path),
                             content=r.chunk.content,
                             score=r.score,

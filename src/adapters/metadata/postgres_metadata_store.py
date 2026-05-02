@@ -154,7 +154,7 @@ class PostgresMetadataStore(IMetadataStore):
                     chunk_id TEXT PRIMARY KEY REFERENCES chunks_metadata (chunk_id) ON DELETE CASCADE,
                     document_id TEXT NOT NULL,
                     content_text TEXT NOT NULL DEFAULT '',
-                    enriched_content TEXT,
+                    embedding_input TEXT,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 """
@@ -454,7 +454,7 @@ class PostgresMetadataStore(IMetadataStore):
                                cm.content_length,
                                cm.language,
                                cc.content_text,
-                               cc.enriched_content
+                               cc.embedding_input
                         FROM chunks_metadata cm
                         LEFT JOIN chunk_contents cc
                           ON cc.chunk_id = cm.chunk_id
@@ -477,7 +477,7 @@ class PostgresMetadataStore(IMetadataStore):
                         content_length=row[6],
                         language=row[7],
                         content_text=row[8],
-                        enriched_content=row[9],
+                        embedding_input=row[9],
                     )
                     for row in rows
                 ]
@@ -927,7 +927,7 @@ class PostgresMetadataStore(IMetadataStore):
                 c.chunk_id,
                 c.document_id,
                 c.content_text or "",
-                c.enriched_content,
+                c.embedding_input,
             )
             for c in chunks
         ]
@@ -967,7 +967,7 @@ class PostgresMetadataStore(IMetadataStore):
                 chunk_id,
                 document_id,
                 content_text,
-                enriched_content,
+                embedding_input,
                 updated_at
             )
             VALUES (%s, %s, %s, %s, NOW())
@@ -975,7 +975,7 @@ class PostgresMetadataStore(IMetadataStore):
             DO UPDATE SET
                 document_id = EXCLUDED.document_id,
                 content_text = EXCLUDED.content_text,
-                enriched_content = EXCLUDED.enriched_content,
+                embedding_input = EXCLUDED.embedding_input,
                 updated_at = NOW();
             """,
             content_rows,

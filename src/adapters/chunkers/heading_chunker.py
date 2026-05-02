@@ -8,6 +8,7 @@ Algorithm:
   4. Content quá lớn → split tại sentence boundary
   5. Chunk quá nhỏ → merge với chunk kế tiếp
 """
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -226,16 +227,18 @@ class HeadingChunker(IChunker):
         doc: ParsedDocument,
         chunk_index: int,
     ) -> Chunk:
-        enriched = self._enrich_content(content, heading_path)
+        embedding_input = self._enrich_content(content, heading_path)
         course_id = self._metadata_value(doc.metadata, "course_id")
         owner_id = self._metadata_value(doc.metadata, "owner_id")
         return Chunk(
             id=str(uuid.uuid4()),
             content=content,
+            embedding_input=embedding_input,
+            content_hash=hashlib.md5(content.encode()).hexdigest(),
             metadata=ChunkMetadata(
                 document_id=doc.document.id,
                 document_name=doc.document.name,
-                doc_type=doc.document.doc_type,
+                document_type=doc.document.doc_type,
                 chunk_index=chunk_index,
                 heading_path=tuple(heading_path),
                 heading_level=heading_level,
@@ -245,7 +248,6 @@ class HeadingChunker(IChunker):
                 owner_id=owner_id,
             ),
             images=images,
-            enriched_content=enriched,
         )
 
     def _split_text(self, text: str) -> list[str]:
@@ -306,10 +308,14 @@ class HeadingChunker(IChunker):
                     merged.append(Chunk(
                         id=current.id,
                         content=merged_content,
+                        embedding_input=self._enrich_content(
+                            merged_content, list(current.metadata.heading_path)
+                        ),
+                        content_hash=hashlib.md5(merged_content.encode()).hexdigest(),
                         metadata=ChunkMetadata(
                             document_id=current.metadata.document_id,
                             document_name=current.metadata.document_name,
-                            doc_type=current.metadata.doc_type,
+                            document_type=current.metadata.document_type,
                             chunk_index=len(merged),
                             heading_path=current.metadata.heading_path,
                             heading_level=current.metadata.heading_level,
@@ -319,9 +325,6 @@ class HeadingChunker(IChunker):
                             owner_id=current.metadata.owner_id,
                         ),
                         images=current.images + next_chunk.images,
-                        enriched_content=self._enrich_content(
-                            merged_content, list(current.metadata.heading_path)
-                        ),
                     ))
                     i += 2
                     continue
@@ -334,10 +337,12 @@ class HeadingChunker(IChunker):
             Chunk(
                 id=c.id,
                 content=c.content,
+                embedding_input=c.embedding_input,
+                content_hash=c.content_hash,
                 metadata=ChunkMetadata(
                     document_id=c.metadata.document_id,
                     document_name=c.metadata.document_name,
-                    doc_type=c.metadata.doc_type,
+                    document_type=c.metadata.document_type,
                     chunk_index=idx,
                     heading_path=c.metadata.heading_path,
                     heading_level=c.metadata.heading_level,
@@ -347,7 +352,6 @@ class HeadingChunker(IChunker):
                     owner_id=c.metadata.owner_id,
                 ),
                 images=c.images,
-                enriched_content=c.enriched_content,
             )
             for idx, c in enumerate(merged)
         ]
