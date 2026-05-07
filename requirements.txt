@@ -9,3 +9,6 @@
 #
 # Install for development:
 #   pip install -e ".[embeddings,dev]"
+#
+# Install with LlamaIndex chunkers (for comparison):
+#   pip install -e ".[llamaindex]"

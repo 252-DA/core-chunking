@@ -119,6 +119,21 @@ class ChunkerConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CHUNKER_")
 
 
+class LlamaIndexChunkerConfig(BaseSettings):
+    # SentenceSplitter / TokenTextSplitter
+    # 375 tokens ≈ 1500 chars (tương đương ChunkerConfig.max_chunk_size để so sánh công bằng)
+    chunk_size: int = 375
+    chunk_overlap: int = 50        # ~200 chars, tương đương ChunkerConfig.overlap_size
+
+    # SemanticSplitterNodeParser
+    semantic_buffer_size: int = 1
+    semantic_breakpoint_percentile: int = 95
+    # Model nhỏ để chạy nhanh; đổi sang "BAAI/bge-m3" để khớp với embedder chính
+    semantic_embed_model: str = "BAAI/bge-small-en-v1.5"
+
+    model_config = SettingsConfigDict(env_prefix="LLAMAINDEX_CHUNKER_")
+
+
 class EmbedderConfig(BaseSettings):
     provider: Literal["bge", "openai", "sentence_transformers"] = "bge"
 
@@ -179,6 +194,7 @@ class Settings(BaseSettings):
     outbox: OutboxConfig = Field(default_factory=OutboxConfig)
     parser: ParserConfig = Field(default_factory=ParserConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
+    llamaindex_chunker: LlamaIndexChunkerConfig = Field(default_factory=LlamaIndexChunkerConfig)
     embedder: EmbedderConfig = Field(default_factory=EmbedderConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)

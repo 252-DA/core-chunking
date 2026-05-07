@@ -57,6 +57,7 @@ class Section:
     page_number: int | None = None   # trang trong document gốc
     images: tuple[str, ...] = ()     # filenames của ảnh trong section này
     metadata: dict = field(default_factory=dict)  # extra info từng format
+    is_toc: bool = False             # đánh dấu bởi TocDetector trước khi chunk
 
 
 @dataclass

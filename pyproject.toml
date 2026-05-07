@@ -60,6 +60,10 @@ embeddings = [
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
 ]
+llamaindex = [
+    "llama-index-core>=0.10.0",
+    "llama-index-embeddings-huggingface>=0.3.0",  # cho SemanticSplitter
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -72,7 +76,7 @@ dev = [
     "ipdb>=0.13.13",
 ]
 all = [
-    "document-chunk[embeddings,dev]",
+    "document-chunk[embeddings,llamaindex,dev]",
 ]
 
 [tool.setuptools.packages.find]

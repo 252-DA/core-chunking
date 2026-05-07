@@ -9,7 +9,6 @@ Hoặc qua container:
     serve()
 """
 import signal
-import sys
 from concurrent import futures
 
 import grpc
@@ -76,9 +75,7 @@ def serve() -> None:
     # Graceful shutdown khi nhận SIGTERM / SIGINT
     def _shutdown(signum, frame):
         logger.info("grpc.server.shutting_down")
-        server.stop(grace=5)  # 5s grace period cho requests đang xử lý
-        container.close()
-        sys.exit(0)
+        server.stop(grace=5)  # non-blocking, wait_for_termination() sẽ return sau grace period
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -92,6 +89,8 @@ def serve() -> None:
     )
 
     server.wait_for_termination()
+    container.close()
+    logger.info("grpc.server.stopped")
 
 
 if __name__ == "__main__":

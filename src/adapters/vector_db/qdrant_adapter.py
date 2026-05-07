@@ -44,7 +44,7 @@ _F_LANGUAGE       = "language"
 _F_CONTENT        = "content"
 _F_CONTENT_HASH   = "content_hash"
 _F_IMAGES         = "images"
-_F_ENRICHED       = "embedding_input"
+_F_EMBEDDING_INPUT = "embedding_input"
 
 
 class QdrantAdapter(IVectorStore):

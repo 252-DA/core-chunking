@@ -85,6 +85,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
 
             suffix = Path(request.file_name).suffix or ".tmp"
             tmp_path: Path | None = None
+            result = None
 
             try:
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -101,32 +102,6 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
 
                 result = self._process.execute(dto)
 
-                if result.is_err():
-                    err_msg = str(result.error)
-                    logger.error("grpc.ProcessDocument.failed", error=err_msg)
-                    context.abort(grpc.StatusCode.INTERNAL, err_msg)
-
-                resp = result.unwrap()
-                return chunking_pb2.ProcessDocumentResponse(
-                    document_id=resp.document_id,
-                    document_name=resp.document_name,
-                    doc_type=resp.doc_type.value,
-                    chunk_count=resp.chunk_count,
-                    chunks=[
-                        chunking_pb2.ChunkSummary(
-                            chunk_id=c.chunk_id,
-                            heading_path=c.heading_path,
-                            content_preview=c.content_preview,
-                            content_length=c.content_length,
-                            page_number=c.page_number or 0,
-                            has_images=c.has_images,
-                        )
-                        for c in resp.chunks
-                    ],
-                    storage_key=resp.storage_key,
-                    processing_time_ms=resp.processing_time_ms,
-                )
-
             except Exception as e:
                 logger.error("grpc.ProcessDocument.exception", error=str(e))
                 context.abort(grpc.StatusCode.INTERNAL, str(e))
@@ -134,6 +109,35 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
+
+            if result is None:
+                return
+
+            if result.is_err():
+                err_msg = str(result.error)
+                logger.error("grpc.ProcessDocument.failed", error=err_msg)
+                context.abort(grpc.StatusCode.INTERNAL, err_msg)
+
+            resp = result.unwrap()
+            return chunking_pb2.ProcessDocumentResponse(
+                document_id=resp.document_id,
+                document_name=resp.document_name,
+                doc_type=resp.doc_type.value,
+                chunk_count=resp.chunk_count,
+                chunks=[
+                    chunking_pb2.ChunkSummary(
+                        chunk_id=c.chunk_id,
+                        heading_path=c.heading_path,
+                        content_preview=c.content_preview,
+                        content_length=c.content_length,
+                        page_number=c.page_number or 0,
+                        has_images=c.has_images,
+                    )
+                    for c in resp.chunks
+                ],
+                storage_key=resp.storage_key,
+                processing_time_ms=resp.processing_time_ms,
+            )
 
     # ------------------------------------------------------------------
     # Search
@@ -149,6 +153,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, "query is required")
 
             logger.info("grpc.Search.received", query=request.query, top_k=request.top_k)
+            result = None
 
             try:
                 dto = SearchRequest(
@@ -161,38 +166,39 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                     course_id=request.course_id or None,
                     owner_id=request.owner_id or None,
                 )
-
                 result = self._search.execute(dto)
-
-                if result.is_err():
-                    err_msg = str(result.error)
-                    logger.error("grpc.Search.failed", error=err_msg)
-                    context.abort(grpc.StatusCode.INTERNAL, err_msg)
-
-                resp = result.unwrap()
-                return chunking_pb2.SearchResponse(
-                    query=resp.query,
-                    results=[
-                        chunking_pb2.SearchResultItem(
-                            chunk_id=item.chunk_id,
-                            document_id=item.document_id,
-                            document_name=item.document_name,
-                            doc_type=item.doc_type.value,
-                            heading_path=item.heading_path,
-                            content=item.content,
-                            score=item.score,
-                            rank=item.rank,
-                            page_number=item.page_number or 0,
-                        )
-                        for item in resp.results
-                    ],
-                    total_found=resp.total_found,
-                    search_time_ms=resp.search_time_ms,
-                )
-
             except Exception as e:
                 logger.error("grpc.Search.exception", error=str(e))
                 context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+            if result is None:
+                return
+
+            if result.is_err():
+                err_msg = str(result.error)
+                logger.error("grpc.Search.failed", error=err_msg)
+                context.abort(grpc.StatusCode.INTERNAL, err_msg)
+
+            resp = result.unwrap()
+            return chunking_pb2.SearchResponse(
+                query=resp.query,
+                results=[
+                    chunking_pb2.SearchResultItem(
+                        chunk_id=item.chunk_id,
+                        document_id=item.document_id,
+                        document_name=item.document_name,
+                        doc_type=item.doc_type.value,
+                        heading_path=item.heading_path,
+                        content=item.content,
+                        score=item.score,
+                        rank=item.rank,
+                        page_number=item.page_number or 0,
+                    )
+                    for item in resp.results
+                ],
+                total_found=resp.total_found,
+                search_time_ms=resp.search_time_ms,
+            )
 
     # ------------------------------------------------------------------
     # DeleteDocument
@@ -248,6 +254,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
 
             suffix = Path(request.file_name).suffix or ".tmp"
             tmp_path: Path | None = None
+            result = None
 
             try:
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -264,18 +271,6 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
 
                 result = self._enqueue.execute(dto)
 
-                if result.is_err():
-                    err_msg = str(result.error)
-                    logger.error("grpc.EnqueueDocument.failed", error=err_msg)
-                    context.abort(grpc.StatusCode.INTERNAL, err_msg)
-
-                resp = result.unwrap()
-                return chunking_pb2.EnqueueDocumentResponse(
-                    document_id=resp.document_id,
-                    status=resp.status,
-                    job_id=resp.job_id,
-                )
-
             except Exception as e:
                 logger.error("grpc.EnqueueDocument.exception", error=str(e))
                 context.abort(grpc.StatusCode.INTERNAL, str(e))
@@ -283,6 +278,21 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
+
+            if result is None:
+                return
+
+            if result.is_err():
+                err_msg = str(result.error)
+                logger.error("grpc.EnqueueDocument.failed", error=err_msg)
+                context.abort(grpc.StatusCode.INTERNAL, err_msg)
+
+            resp = result.unwrap()
+            return chunking_pb2.EnqueueDocumentResponse(
+                document_id=resp.document_id,
+                status=resp.status,
+                job_id=resp.job_id,
+            )
 
     # ------------------------------------------------------------------
     # GetDocumentStatus

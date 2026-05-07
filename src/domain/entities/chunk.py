@@ -57,7 +57,7 @@ class Chunk:
 
     # --- Content ---
     content: str
-    embedding_input: str                  # thay cho enriched_content
+    embedding_input: str                  # heading context + content, dùng để embed
     content_hash: str                     # để detect change
 
     # --- Metadata ---

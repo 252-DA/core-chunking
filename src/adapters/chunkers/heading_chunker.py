@@ -11,8 +11,9 @@ Algorithm:
 import hashlib
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 
+from src.adapters.chunkers.toc_detector import annotate_toc
 from src.domain.entities.chunk import Chunk, ChunkMetadata
 from src.domain.entities.document import DocumentType, ElementType, ParsedDocument, Section
 from src.domain.exceptions import ChunkError
@@ -32,6 +33,7 @@ class _ChunkBuffer:
     sections: list[Section] = field(default_factory=list)
     heading_path: list[str] = field(default_factory=list)
     heading_level: int = 0
+    is_toc: bool = False
 
     @property
     def content(self) -> str:
@@ -88,6 +90,10 @@ class HeadingChunker(IChunker):
                 if doc.document.doc_type == DocumentType.PPTX:
                     chunks = self._chunk_by_slides(doc)
                 else:
+                    annotated = annotate_toc(doc.sections)
+                    if annotated is not doc.sections:
+                        logger.debug("toc.detected", document_id=doc.document.id)
+                        doc = dc_replace(doc, sections=annotated)
                     chunks = self._chunk_by_headings(doc)
 
                 chunks = self._merge_small_chunks(chunks, doc.document.doc_type)
@@ -116,6 +122,29 @@ class HeadingChunker(IChunker):
         chunk_index = 0
 
         for section in doc.sections:
+            # --- TOC section: accumulate into a dedicated TOC buffer ---
+            if section.is_toc:
+                if not buffer.is_toc and not buffer.is_empty():
+                    new_chunks = self._flush_buffer(buffer, doc, chunk_index)
+                    chunks.extend(new_chunks)
+                    chunk_index += len(new_chunks)
+                    buffer = _ChunkBuffer(is_toc=True)
+                buffer.sections.append(section)
+                if buffer.size > self._max_size:
+                    new_chunks = self._flush_buffer(buffer, doc, chunk_index)
+                    chunks.extend(new_chunks)
+                    chunk_index += len(new_chunks)
+                    buffer = _ChunkBuffer(is_toc=True)
+                continue
+
+            # --- First non-TOC section after a TOC block: flush TOC buffer ---
+            if buffer.is_toc and not buffer.is_empty():
+                new_chunks = self._flush_buffer(buffer, doc, chunk_index)
+                chunks.extend(new_chunks)
+                chunk_index += len(new_chunks)
+                buffer = _ChunkBuffer()
+
+            # --- Normal heading/content logic ---
             if section.element_type == ElementType.HEADING and section.heading_level > 0:
                 # Flush buffer trước khi bắt đầu heading mới
                 if not buffer.is_empty():
@@ -214,6 +243,7 @@ class HeadingChunker(IChunker):
                 page_number=buffer.page_number,
                 doc=doc,
                 chunk_index=start_index + sub_idx,
+                is_toc=buffer.is_toc,
             ))
         return chunks
 
@@ -226,6 +256,7 @@ class HeadingChunker(IChunker):
         page_number: int | None,
         doc: ParsedDocument,
         chunk_index: int,
+        is_toc: bool = False,
     ) -> Chunk:
         embedding_input = self._enrich_content(content, heading_path)
         course_id = self._metadata_value(doc.metadata, "course_id")
@@ -246,6 +277,8 @@ class HeadingChunker(IChunker):
                 language=doc.language,
                 course_id=course_id,
                 owner_id=owner_id,
+                content_type="toc" if is_toc else None,
+                importance_score=0.1 if is_toc else None,
             ),
             images=images,
         )
@@ -303,27 +336,15 @@ class HeadingChunker(IChunker):
                 combined_size = len(current.content) + len(next_chunk.content)
 
                 if same_parent and combined_size <= self._max_size:
-                    # Merge — giữ heading_path của current (xuất hiện trước)
                     merged_content = current.content + "\n\n" + next_chunk.content
-                    merged.append(Chunk(
-                        id=current.id,
+                    merged.append(dc_replace(
+                        current,
                         content=merged_content,
                         embedding_input=self._enrich_content(
                             merged_content, list(current.metadata.heading_path)
                         ),
                         content_hash=hashlib.md5(merged_content.encode()).hexdigest(),
-                        metadata=ChunkMetadata(
-                            document_id=current.metadata.document_id,
-                            document_name=current.metadata.document_name,
-                            document_type=current.metadata.document_type,
-                            chunk_index=len(merged),
-                            heading_path=current.metadata.heading_path,
-                            heading_level=current.metadata.heading_level,
-                            page_number=current.metadata.page_number,
-                            language=current.metadata.language,
-                            course_id=current.metadata.course_id,
-                            owner_id=current.metadata.owner_id,
-                        ),
+                        metadata=dc_replace(current.metadata, chunk_index=len(merged)),
                         images=current.images + next_chunk.images,
                     ))
                     i += 2
@@ -332,27 +353,8 @@ class HeadingChunker(IChunker):
             merged.append(current)
             i += 1
 
-        # Reindex sau khi merge
         return [
-            Chunk(
-                id=c.id,
-                content=c.content,
-                embedding_input=c.embedding_input,
-                content_hash=c.content_hash,
-                metadata=ChunkMetadata(
-                    document_id=c.metadata.document_id,
-                    document_name=c.metadata.document_name,
-                    document_type=c.metadata.document_type,
-                    chunk_index=idx,
-                    heading_path=c.metadata.heading_path,
-                    heading_level=c.metadata.heading_level,
-                    page_number=c.metadata.page_number,
-                    language=c.metadata.language,
-                    course_id=c.metadata.course_id,
-                    owner_id=c.metadata.owner_id,
-                ),
-                images=c.images,
-            )
+            dc_replace(c, metadata=dc_replace(c.metadata, chunk_index=idx))
             for idx, c in enumerate(merged)
         ]
 
