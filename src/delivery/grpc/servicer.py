@@ -30,7 +30,15 @@ from src.application.use_cases.get_document_status import (
     GetDocumentStatusUseCase,
 )
 from src.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
+from src.application.use_cases.ingest_curriculum import (
+    IngestCurriculumRequest,
+    IngestCurriculumUseCase,
+)
 from src.application.use_cases.process_document import ProcessDocumentUseCase
+from src.application.use_cases.search_by_learning_outcome import (
+    SearchByLearningOutcomeRequest,
+    SearchByLearningOutcomeUseCase,
+)
 from src.application.use_cases.search_chunks import SearchChunksUseCase
 from src.delivery.grpc.proto import chunking_pb2, chunking_pb2_grpc
 from src.domain.entities.document import DocumentType
@@ -53,6 +61,9 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         get_document_status_use_case: GetDocumentStatusUseCase,
         get_cards_use_case: GetCardsUseCase,
         get_quiz_use_case: GetQuizUseCase,
+        ingest_curriculum_use_case: IngestCurriculumUseCase | None = None,
+        search_by_lo_use_case: SearchByLearningOutcomeUseCase | None = None,
+        generate_curriculum_quiz_use_case=None,
     ) -> None:
         self._process = process_use_case
         self._search = search_use_case
@@ -61,6 +72,9 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         self._get_document_status = get_document_status_use_case
         self._get_cards = get_cards_use_case
         self._get_quiz = get_quiz_use_case
+        self._ingest_curriculum = ingest_curriculum_use_case
+        self._search_by_lo = search_by_lo_use_case
+        self._generate_curriculum_quiz = generate_curriculum_quiz_use_case
 
     # ------------------------------------------------------------------
     # ProcessDocument (sync)
@@ -402,6 +416,241 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
                 for question in response.questions
             ],
             total_questions=response.total_questions,
+        )
+
+    # ------------------------------------------------------------------
+    # IngestCurriculum
+    # ------------------------------------------------------------------
+
+    def IngestCurriculum(
+        self,
+        request: chunking_pb2.IngestCurriculumRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.IngestCurriculumResponse:
+        if not request.file_data:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
+        if not request.file_name:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_name is required")
+        if not request.course_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
+        if self._ingest_curriculum is None:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, "IngestCurriculum not configured")
+
+        logger.info(
+            "grpc.IngestCurriculum.received",
+            course_id=request.course_id,
+            file_name=request.file_name,
+        )
+
+        suffix = Path(request.file_name).suffix or ".pdf"
+        tmp_path: Path | None = None
+        result = None
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(request.file_data)
+                tmp_path = Path(tmp.name)
+
+            result = self._ingest_curriculum.execute(
+                IngestCurriculumRequest(
+                    file_path=tmp_path,
+                    file_name=request.file_name,
+                    course_id=request.course_id,
+                )
+            )
+        except Exception as exc:
+            logger.error("grpc.IngestCurriculum.exception", error=str(exc))
+            context.abort(grpc.StatusCode.INTERNAL, str(exc))
+        finally:
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink()
+
+        if result is None:
+            return
+
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        resp = result.unwrap()
+        return chunking_pb2.IngestCurriculumResponse(
+            course_id=resp.course_id,
+            course_code=resp.course_code,
+            title_vi=resp.title_vi,
+            chapter_count=resp.chapter_count,
+            lo_count=resp.lo_count,
+            assessment_count=resp.assessment_count,
+            extraction_confidence=resp.extraction_confidence,
+            warnings=resp.warnings,
+        )
+
+    # ------------------------------------------------------------------
+    # GetCurriculum
+    # ------------------------------------------------------------------
+
+    def GetCurriculum(
+        self,
+        request: chunking_pb2.GetCurriculumRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.GetCurriculumResponse:
+        if not request.course_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
+        if self._ingest_curriculum is None:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, "Curriculum store not configured")
+
+        from src.domain.ports.metadata_store import IMetadataStore
+        metadata_store: IMetadataStore = self._ingest_curriculum._metadata_store  # type: ignore[attr-defined]
+        result = metadata_store.get_curriculum(request.course_id)
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        data = result.unwrap()
+        if data is None:
+            context.abort(grpc.StatusCode.NOT_FOUND, f"Curriculum for {request.course_id} not found")
+
+        stored_course, chapters, los, assessments = data
+        return chunking_pb2.GetCurriculumResponse(
+            course_id=stored_course.course_id,
+            code=stored_course.code,
+            title_vi=stored_course.title_vi,
+            chapters=[
+                chunking_pb2.ChapterMsg(
+                    chapter_id=c.chapter_id,
+                    code=c.code,
+                    title=c.title,
+                    order_index=c.order_index,
+                )
+                for c in chapters
+            ],
+            learning_outcomes=[
+                chunking_pb2.LearningOutcomeMsg(
+                    lo_id=lo.lo_id,
+                    code=lo.code,
+                    parent_code=lo.parent_code or "",
+                    statement_vi=lo.statement_vi,
+                    statement_en=lo.statement_en or "",
+                    bloom_level=lo.bloom_level or "",
+                    cdio_level=lo.cdio_level or 0,
+                )
+                for lo in los
+            ],
+            assessments=[
+                chunking_pb2.AssessmentMsg(
+                    assessment_id=a.assessment_id,
+                    code=a.code,
+                    name_vi=a.name_vi,
+                    category=a.category,
+                    weight=a.weight or 0.0,
+                )
+                for a in assessments
+            ],
+        )
+
+    # ------------------------------------------------------------------
+    # SearchByLearningOutcome
+    # ------------------------------------------------------------------
+
+    def SearchByLearningOutcome(
+        self,
+        request: chunking_pb2.SearchByLearningOutcomeRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.SearchByLearningOutcomeResponse:
+        if not request.course_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
+        if self._search_by_lo is None:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, "SearchByLearningOutcome not configured")
+
+        result = self._search_by_lo.execute(
+            SearchByLearningOutcomeRequest(
+                course_id=request.course_id,
+                lo_code=request.lo_code or None,
+                chapter_code=request.chapter_code or None,
+                assessment_code=request.assessment_code or None,
+                query=request.query or None,
+                top_k=request.top_k or 10,
+            )
+        )
+
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        resp = result.unwrap()
+        return chunking_pb2.SearchByLearningOutcomeResponse(
+            course_id=resp.course_id,
+            lo_ids_searched=resp.lo_ids_searched,
+            results=[
+                chunking_pb2.LOSearchResultItem(
+                    chunk_id=item.chunk_id,
+                    document_id=item.document_id,
+                    heading_path=list(item.heading_path),
+                    content_text=item.content_text or "",
+                    page_number=item.page_number or 0,
+                    lo_ids=item.lo_ids,
+                    rank=item.rank,
+                )
+                for item in resp.results
+            ],
+            total_found=resp.total_found,
+        )
+
+    # ------------------------------------------------------------------
+    # GenerateCurriculumQuiz
+    # ------------------------------------------------------------------
+
+    def GenerateCurriculumQuiz(
+        self,
+        request: chunking_pb2.GenerateCurriculumQuizRequest,
+        context: grpc.ServicerContext,
+    ) -> chunking_pb2.GetQuizResponse:
+        if not request.course_id:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
+        if not request.target_kind:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_kind is required")
+        if not request.target_code:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_code is required")
+        if self._generate_curriculum_quiz is None:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, "GenerateCurriculumQuiz not configured")
+
+        logger.info(
+            "grpc.GenerateCurriculumQuiz.received",
+            course_id=request.course_id,
+            target_kind=request.target_kind,
+            target_code=request.target_code,
+        )
+
+        from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizRequest as WRequest
+
+        result = self._generate_curriculum_quiz.execute(
+            WRequest(
+                course_id=request.course_id,
+                target_kind=request.target_kind,
+                target_code=request.target_code,
+                style=request.style or "quiz",
+                bloom_level=request.bloom_level or None,
+                count=request.count or 5,
+            )
+        )
+
+        if result.is_err():
+            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
+
+        resp = result.unwrap()
+        # Return GetQuizResponse with basic quiz items
+        return chunking_pb2.GetQuizResponse(
+            document_id=f"_curriculum_{resp.course_id}",
+            questions=[
+                chunking_pb2.QuizItem(
+                    question_id=qid,
+                    chunk_id="",
+                    question="",
+                    choices=[],
+                    correct_index=0,
+                    explanation="",
+                    difficulty="medium",
+                    lo_id=resp.lo_id,
+                )
+                for qid in resp.question_ids
+            ],
+            total_questions=resp.quiz_count,
         )
 
     # ------------------------------------------------------------------

@@ -1,13 +1,20 @@
+from __future__ import annotations
+
 from src.domain.entities.document import Document
 from src.domain.ports.metadata_store import (
     DocumentFilter,
     IMetadataStore,
     IngestionStatus,
     OutboxEvent,
+    StoredAssessment,
+    StoredChapter,
     StoredChunkConcept,
+    StoredChunkLOMapping,
     StoredChunkMetadata,
     StoredConcept,
+    StoredCourse,
     StoredDocumentContext,
+    StoredLearningOutcome,
     StoredLessonCard,
     StoredQuizItem,
 )
@@ -121,3 +128,42 @@ class NoopMetadataStore(IMetadataStore):
         self, document_id: str
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
         return Ok(None)
+
+    def upsert_curriculum(
+        self,
+        course: StoredCourse,
+        chapters: list[StoredChapter],
+        learning_outcomes: list[StoredLearningOutcome],
+        assessments: list[StoredAssessment],
+        lo_assessment_links: list[tuple[str, str]],
+    ) -> Result[None, Exception]:
+        return Ok(None)
+
+    def get_curriculum(
+        self, course_id: str
+    ) -> Result[
+        tuple[StoredCourse, list[StoredChapter], list[StoredLearningOutcome], list[StoredAssessment]] | None,
+        Exception,
+    ]:
+        return Ok(None)
+
+    def list_los_by_chapter(
+        self, course_id: str, chapter_code: str
+    ) -> Result[list[StoredLearningOutcome], Exception]:
+        return Ok([])
+
+    def list_los_by_assessment(
+        self, course_id: str, assessment_code: str
+    ) -> Result[list[StoredLearningOutcome], Exception]:
+        return Ok([])
+
+    def upsert_chunk_lo_mappings(
+        self,
+        mappings: list[StoredChunkLOMapping],
+    ) -> Result[None, Exception]:
+        return Ok(None)
+
+    def list_chunks_for_lo(
+        self, lo_id: str
+    ) -> Result[list[StoredChunkMetadata], Exception]:
+        return Ok([])

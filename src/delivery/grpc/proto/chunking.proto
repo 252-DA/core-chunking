@@ -30,6 +30,22 @@ service ChunkingService {
 
   // Health check — kiểm tra service còn sống không
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // ---------------------------------------------------------------------------
+  // Curriculum-Aware layer
+  // ---------------------------------------------------------------------------
+
+  // Parse DCMH → extract LO graph → persist
+  rpc IngestCurriculum(IngestCurriculumRequest) returns (IngestCurriculumResponse);
+
+  // Lấy curriculum đã ingest
+  rpc GetCurriculum(GetCurriculumRequest) returns (GetCurriculumResponse);
+
+  // Search chunks theo LO / chapter / assessment
+  rpc SearchByLearningOutcome(SearchByLearningOutcomeRequest) returns (SearchByLearningOutcomeResponse);
+
+  // Sinh quiz aligned theo LO
+  rpc GenerateCurriculumQuiz(GenerateCurriculumQuizRequest) returns (GetQuizResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +137,10 @@ message QuizItem {
   int32 correct_index = 5;
   string explanation = 6;
   string difficulty = 7;
+  // Curriculum-Aware extensions (backward-compatible)
+  string lo_id = 8;
+  string bloom_level = 9;
+  string lo_alignment_rationale = 10;
 }
 
 message GetQuizResponse {
@@ -187,4 +207,98 @@ message HealthCheckRequest {}
 message HealthCheckResponse {
   string status  = 1;  // "ok" | "degraded"
   string version = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Curriculum-Aware messages
+// ---------------------------------------------------------------------------
+
+message IngestCurriculumRequest {
+  bytes  file_data  = 1;
+  string file_name  = 2;
+  string course_id  = 3;
+}
+
+message IngestCurriculumResponse {
+  string course_id            = 1;
+  string course_code          = 2;
+  string title_vi             = 3;
+  int32  chapter_count        = 4;
+  int32  lo_count             = 5;
+  int32  assessment_count     = 6;
+  float  extraction_confidence = 7;
+  repeated string warnings    = 8;
+}
+
+message LearningOutcomeMsg {
+  string lo_id        = 1;
+  string code         = 2;
+  string parent_code  = 3;
+  string statement_vi = 4;
+  string statement_en = 5;
+  string bloom_level  = 6;
+  int32  cdio_level   = 7;
+}
+
+message ChapterMsg {
+  string chapter_id  = 1;
+  string code        = 2;
+  string title       = 3;
+  int32  order_index = 4;
+}
+
+message AssessmentMsg {
+  string assessment_id = 1;
+  string code          = 2;
+  string name_vi       = 3;
+  string category      = 4;
+  float  weight        = 5;
+}
+
+message GetCurriculumRequest {
+  string course_id = 1;
+}
+
+message GetCurriculumResponse {
+  string course_id                        = 1;
+  string code                             = 2;
+  string title_vi                         = 3;
+  repeated ChapterMsg chapters            = 4;
+  repeated LearningOutcomeMsg learning_outcomes = 5;
+  repeated AssessmentMsg assessments      = 6;
+}
+
+message SearchByLearningOutcomeRequest {
+  string course_id        = 1;
+  string lo_code          = 2;
+  string chapter_code     = 3;
+  string assessment_code  = 4;
+  string query            = 5;
+  int32  top_k            = 6;
+}
+
+message LOSearchResultItem {
+  string chunk_id                  = 1;
+  string document_id               = 2;
+  repeated string heading_path     = 3;
+  string content_text              = 4;
+  int32  page_number               = 5;
+  repeated string lo_ids           = 6;
+  int32  rank                      = 7;
+}
+
+message SearchByLearningOutcomeResponse {
+  string course_id                         = 1;
+  repeated string lo_ids_searched          = 2;
+  repeated LOSearchResultItem results      = 3;
+  int32  total_found                       = 4;
+}
+
+message GenerateCurriculumQuizRequest {
+  string course_id    = 1;
+  string target_kind  = 2;  // "lo" | "chapter" | "assessment"
+  string target_code  = 3;
+  string style        = 4;  // "quiz" | "midterm" | "final"
+  string bloom_level  = 5;
+  int32  count        = 6;
 }

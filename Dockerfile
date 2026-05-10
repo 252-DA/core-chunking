@@ -3,7 +3,9 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    LLM__PROVIDER=gemini \
+    LLM__MODEL=gemini-3-flash-preview
 
 # System deps for python-magic, psycopg binary, etc.
 RUN apt-get update && \

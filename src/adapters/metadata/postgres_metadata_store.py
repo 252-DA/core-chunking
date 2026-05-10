@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import uuid
 from contextlib import contextmanager
@@ -10,10 +12,15 @@ from src.domain.ports.metadata_store import (
     IMetadataStore,
     IngestionStatus,
     OutboxEvent,
+    StoredAssessment,
+    StoredChapter,
     StoredChunkConcept,
+    StoredChunkLOMapping,
     StoredChunkMetadata,
     StoredConcept,
+    StoredCourse,
     StoredDocumentContext,
+    StoredLearningOutcome,
     StoredLessonCard,
     StoredQuizItem,
 )
@@ -274,6 +281,102 @@ class PostgresMetadataStore(IMetadataStore):
                 ON quiz_items (document_id, primary_chunk_id, question_index);
                 """
             )
+
+            # ------------------------------------------------------------------
+            # Curriculum-Aware layer tables
+            # ------------------------------------------------------------------
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS courses (
+                    course_id TEXT PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    title_vi TEXT NOT NULL,
+                    title_en TEXT,
+                    credits INT,
+                    semester TEXT,
+                    source_document_id TEXT REFERENCES documents_metadata(document_id) ON DELETE SET NULL,
+                    extraction_confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chapters (
+                    chapter_id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    code TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    order_index INT NOT NULL DEFAULT 0,
+                    UNIQUE(course_id, code)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS learning_outcomes (
+                    lo_id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    code TEXT NOT NULL,
+                    parent_code TEXT,
+                    statement_vi TEXT NOT NULL,
+                    statement_en TEXT,
+                    bloom_level TEXT,
+                    cdio_level INT,
+                    UNIQUE(course_id, code)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_lo_course ON learning_outcomes(course_id);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assessments (
+                    assessment_id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    code TEXT NOT NULL,
+                    name_vi TEXT NOT NULL,
+                    name_en TEXT,
+                    category TEXT NOT NULL DEFAULT 'quiz',
+                    weight DOUBLE PRECISION,
+                    UNIQUE(course_id, code)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lo_assessments (
+                    lo_id TEXT REFERENCES learning_outcomes(lo_id) ON DELETE CASCADE,
+                    assessment_id TEXT REFERENCES assessments(assessment_id) ON DELETE CASCADE,
+                    PRIMARY KEY(lo_id, assessment_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunk_lo_mappings (
+                    chunk_id TEXT REFERENCES chunks_metadata(chunk_id) ON DELETE CASCADE,
+                    lo_id TEXT REFERENCES learning_outcomes(lo_id) ON DELETE CASCADE,
+                    confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY(chunk_id, lo_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_clm_lo ON chunk_lo_mappings(lo_id);
+                """
+            )
+            cur.execute("ALTER TABLE quiz_items ADD COLUMN IF NOT EXISTS lo_id TEXT REFERENCES learning_outcomes(lo_id) ON DELETE SET NULL;")
+            cur.execute("ALTER TABLE quiz_items ADD COLUMN IF NOT EXISTS assessment_id TEXT REFERENCES assessments(assessment_id) ON DELETE SET NULL;")
+            cur.execute("ALTER TABLE quiz_items ADD COLUMN IF NOT EXISTS bloom_level TEXT;")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_quiz_items_lo ON quiz_items(lo_id);")
         conn.commit()
 
     def upsert_document(
@@ -896,6 +999,284 @@ class PostgresMetadataStore(IMetadataStore):
                 return Ok((IngestionStatus(row[0]), row[1], row[2]))
             except Exception as exc:
                 return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    # ------------------------------------------------------------------
+    # Curriculum methods
+    # ------------------------------------------------------------------
+
+    def upsert_curriculum(
+        self,
+        course: StoredCourse,
+        chapters: list[StoredChapter],
+        learning_outcomes: list[StoredLearningOutcome],
+        assessments: list[StoredAssessment],
+        lo_assessment_links: list[tuple[str, str]],
+    ) -> Result[None, Exception]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO courses (
+                            course_id, code, title_vi, title_en, credits, semester,
+                            source_document_id, extraction_confidence, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (course_id) DO UPDATE SET
+                            code = EXCLUDED.code,
+                            title_vi = EXCLUDED.title_vi,
+                            title_en = EXCLUDED.title_en,
+                            credits = EXCLUDED.credits,
+                            semester = EXCLUDED.semester,
+                            source_document_id = EXCLUDED.source_document_id,
+                            extraction_confidence = EXCLUDED.extraction_confidence,
+                            updated_at = NOW();
+                        """,
+                        (
+                            course.course_id, course.code, course.title_vi, course.title_en,
+                            course.credits, course.semester, course.source_document_id,
+                            course.extraction_confidence,
+                        ),
+                    )
+
+                    if chapters:
+                        cur.executemany(
+                            """
+                            INSERT INTO chapters (chapter_id, course_id, code, title, order_index)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (course_id, code) DO UPDATE SET
+                                title = EXCLUDED.title, order_index = EXCLUDED.order_index;
+                            """,
+                            [(c.chapter_id, c.course_id, c.code, c.title, c.order_index) for c in chapters],
+                        )
+
+                    if learning_outcomes:
+                        cur.executemany(
+                            """
+                            INSERT INTO learning_outcomes (
+                                lo_id, course_id, code, parent_code,
+                                statement_vi, statement_en, bloom_level, cdio_level
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (course_id, code) DO UPDATE SET
+                                parent_code = EXCLUDED.parent_code,
+                                statement_vi = EXCLUDED.statement_vi,
+                                statement_en = EXCLUDED.statement_en,
+                                bloom_level = EXCLUDED.bloom_level,
+                                cdio_level = EXCLUDED.cdio_level;
+                            """,
+                            [
+                                (
+                                    lo.lo_id, lo.course_id, lo.code, lo.parent_code,
+                                    lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level,
+                                )
+                                for lo in learning_outcomes
+                            ],
+                        )
+
+                    if assessments:
+                        cur.executemany(
+                            """
+                            INSERT INTO assessments (
+                                assessment_id, course_id, code, name_vi, name_en, category, weight
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (course_id, code) DO UPDATE SET
+                                name_vi = EXCLUDED.name_vi,
+                                name_en = EXCLUDED.name_en,
+                                category = EXCLUDED.category,
+                                weight = EXCLUDED.weight;
+                            """,
+                            [
+                                (a.assessment_id, a.course_id, a.code, a.name_vi, a.name_en, a.category, a.weight)
+                                for a in assessments
+                            ],
+                        )
+
+                    if lo_assessment_links:
+                        cur.executemany(
+                            """
+                            INSERT INTO lo_assessments (lo_id, assessment_id)
+                            VALUES (%s, %s)
+                            ON CONFLICT DO NOTHING;
+                            """,
+                            lo_assessment_links,
+                        )
+                conn.commit()
+            return Ok(None)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def get_curriculum(
+        self, course_id: str
+    ) -> Result[
+        tuple[StoredCourse, list[StoredChapter], list[StoredLearningOutcome], list[StoredAssessment]] | None,
+        Exception,
+    ]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT course_id, code, title_vi, title_en, credits, semester, "
+                        "source_document_id, extraction_confidence FROM courses WHERE course_id = %s;",
+                        (course_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        return Ok(None)
+                    course = StoredCourse(
+                        course_id=row[0], code=row[1], title_vi=row[2], title_en=row[3],
+                        credits=row[4], semester=row[5], source_document_id=row[6],
+                        extraction_confidence=row[7],
+                    )
+
+                    cur.execute(
+                        "SELECT chapter_id, course_id, code, title, order_index FROM chapters "
+                        "WHERE course_id = %s ORDER BY order_index;",
+                        (course_id,),
+                    )
+                    chapters = [
+                        StoredChapter(chapter_id=r[0], course_id=r[1], code=r[2], title=r[3], order_index=r[4])
+                        for r in cur.fetchall()
+                    ]
+
+                    cur.execute(
+                        "SELECT lo_id, course_id, code, parent_code, statement_vi, statement_en, "
+                        "bloom_level, cdio_level FROM learning_outcomes WHERE course_id = %s;",
+                        (course_id,),
+                    )
+                    los = [
+                        StoredLearningOutcome(
+                            lo_id=r[0], course_id=r[1], code=r[2], parent_code=r[3],
+                            statement_vi=r[4], statement_en=r[5], bloom_level=r[6], cdio_level=r[7],
+                        )
+                        for r in cur.fetchall()
+                    ]
+
+                    cur.execute(
+                        "SELECT assessment_id, course_id, code, name_vi, name_en, category, weight "
+                        "FROM assessments WHERE course_id = %s;",
+                        (course_id,),
+                    )
+                    assessments = [
+                        StoredAssessment(
+                            assessment_id=r[0], course_id=r[1], code=r[2], name_vi=r[3],
+                            name_en=r[4], category=r[5], weight=r[6],
+                        )
+                        for r in cur.fetchall()
+                    ]
+            return Ok((course, chapters, los, assessments))
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_los_by_chapter(
+        self, course_id: str, chapter_code: str
+    ) -> Result[list[StoredLearningOutcome], Exception]:
+        try:
+            prefix = f"L.O.{chapter_code}."
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT lo_id, course_id, code, parent_code, statement_vi,
+                               statement_en, bloom_level, cdio_level
+                        FROM learning_outcomes
+                        WHERE course_id = %s AND (code LIKE %s OR code = %s);
+                        """,
+                        (course_id, prefix + "%", f"L.O.{chapter_code}"),
+                    )
+                    return Ok([
+                        StoredLearningOutcome(
+                            lo_id=r[0], course_id=r[1], code=r[2], parent_code=r[3],
+                            statement_vi=r[4], statement_en=r[5], bloom_level=r[6], cdio_level=r[7],
+                        )
+                        for r in cur.fetchall()
+                    ])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_los_by_assessment(
+        self, course_id: str, assessment_code: str
+    ) -> Result[list[StoredLearningOutcome], Exception]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT lo.lo_id, lo.course_id, lo.code, lo.parent_code, lo.statement_vi,
+                               lo.statement_en, lo.bloom_level, lo.cdio_level
+                        FROM learning_outcomes lo
+                        JOIN lo_assessments la ON la.lo_id = lo.lo_id
+                        JOIN assessments a ON a.assessment_id = la.assessment_id
+                        WHERE lo.course_id = %s AND a.code = %s;
+                        """,
+                        (course_id, assessment_code),
+                    )
+                    return Ok([
+                        StoredLearningOutcome(
+                            lo_id=r[0], course_id=r[1], code=r[2], parent_code=r[3],
+                            statement_vi=r[4], statement_en=r[5], bloom_level=r[6], cdio_level=r[7],
+                        )
+                        for r in cur.fetchall()
+                    ])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def upsert_chunk_lo_mappings(
+        self,
+        mappings: list[StoredChunkLOMapping],
+    ) -> Result[None, Exception]:
+        if not mappings:
+            return Ok(None)
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO chunk_lo_mappings (chunk_id, lo_id, confidence, source)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (chunk_id, lo_id) DO UPDATE SET
+                            confidence = GREATEST(EXCLUDED.confidence, chunk_lo_mappings.confidence),
+                            source = EXCLUDED.source;
+                        """,
+                        [(m.chunk_id, m.lo_id, m.confidence, m.source) for m in mappings],
+                    )
+                conn.commit()
+            return Ok(None)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_chunks_for_lo(
+        self, lo_id: str
+    ) -> Result[list[StoredChunkMetadata], Exception]:
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT cm.chunk_id, cm.document_id, cm.chunk_index,
+                               cm.heading_path, cm.heading_level, cm.page_number,
+                               cm.content_length, cm.language,
+                               cc.content_text, cc.embedding_input
+                        FROM chunk_lo_mappings clm
+                        JOIN chunks_metadata cm ON cm.chunk_id = clm.chunk_id
+                        LEFT JOIN chunk_contents cc ON cc.chunk_id = cm.chunk_id
+                        WHERE clm.lo_id = %s
+                        ORDER BY clm.confidence DESC;
+                        """,
+                        (lo_id,),
+                    )
+                    return Ok([
+                        StoredChunkMetadata(
+                            chunk_id=r[0], document_id=r[1], chunk_index=r[2],
+                            heading_path=tuple(r[3] or ()), heading_level=r[4],
+                            page_number=r[5], content_length=r[6], language=r[7],
+                            content_text=r[8], embedding_input=r[9],
+                        )
+                        for r in cur.fetchall()
+                    ])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def _row_to_document(self, row: tuple) -> Document:
         return Document(

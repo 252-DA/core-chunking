@@ -271,6 +271,64 @@ class Container:
             job_queue=self.job_queue,
         )
 
+    # ------------------------------------------------------------------
+    # Curriculum-Aware use cases
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def curriculum_extractor(self):
+        from src.adapters.curriculum.dcmh_extractor import DcmhExtractor
+        logger.debug("container.init", component="DcmhExtractor")
+        return DcmhExtractor()
+
+    @cached_property
+    def lo_mapper(self):
+        from src.adapters.curriculum.heuristic_lo_mapper import HeuristicLoMapper
+        logger.debug("container.init", component="HeuristicLoMapper")
+        return HeuristicLoMapper()
+
+    @cached_property
+    def ingest_curriculum_use_case(self):
+        from src.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
+        logger.debug("container.init", component="IngestCurriculumUseCase")
+        return IngestCurriculumUseCase(
+            parsers=self.parsers,
+            curriculum_extractor=self.curriculum_extractor,
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+        )
+
+    @cached_property
+    def map_chunks_to_los_use_case(self):
+        from src.application.use_cases.map_chunks_to_los import MapChunksToLosUseCase
+        logger.debug("container.init", component="MapChunksToLosUseCase")
+        return MapChunksToLosUseCase(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            lo_mapper=self.lo_mapper,
+        )
+
+    @cached_property
+    def search_by_lo_use_case(self):
+        from src.application.use_cases.search_by_learning_outcome import SearchByLearningOutcomeUseCase
+        logger.debug("container.init", component="SearchByLearningOutcomeUseCase")
+        return SearchByLearningOutcomeUseCase(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+        )
+
+    @cached_property
+    def generate_curriculum_quiz_use_case(self):
+        try:
+            from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizUseCase
+        except ModuleNotFoundError:
+            logger.warning("container.init", component="GenerateCurriculumQuizUseCase", reason="worker.unavailable")
+            return None
+        logger.debug("container.init", component="GenerateCurriculumQuizUseCase")
+        return GenerateCurriculumQuizUseCase(
+            metadata_store=self.metadata_store,
+            llm_client=self.llm_client,
+        )
 
 
 @lru_cache

@@ -31,8 +31,8 @@ dependencies = [
     "bullmq>=2.0.0",
     "redis>=5.0.0",
     # gRPC
-    "grpcio>=1.63.0",
-    "grpcio-tools>=1.63.0",
+    "grpcio>=1.80.0",
+    "grpcio-tools>=1.80.0",
     "protobuf>=4.25.0",
     # HTTP API + Swagger UI
     "fastapi>=0.115.0",

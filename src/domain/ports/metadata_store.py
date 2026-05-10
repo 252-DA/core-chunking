@@ -112,6 +112,58 @@ class OutboxEvent:
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+@dataclass(frozen=True)
+class StoredCourse:
+    course_id: str
+    code: str
+    title_vi: str
+    title_en: str | None = None
+    credits: int | None = None
+    semester: str | None = None
+    source_document_id: str | None = None
+    extraction_confidence: float = 0.0
+
+
+@dataclass(frozen=True)
+class StoredChapter:
+    chapter_id: str
+    course_id: str
+    code: str
+    title: str
+    order_index: int = 0
+
+
+@dataclass(frozen=True)
+class StoredLearningOutcome:
+    lo_id: str
+    course_id: str
+    code: str
+    parent_code: str | None
+    statement_vi: str
+    statement_en: str | None = None
+    bloom_level: str | None = None
+    cdio_level: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredAssessment:
+    assessment_id: str
+    course_id: str
+    code: str
+    name_vi: str
+    name_en: str | None = None
+    category: str = "quiz"
+    weight: float | None = None
+
+
+@dataclass(frozen=True)
+class StoredChunkLOMapping:
+    chunk_id: str
+    lo_id: str
+    confidence: float
+    source: str
+
+
 class IMetadataStore(ABC):
     """
     Port: SQL metadata + ingestion status + outbox events.
@@ -274,4 +326,59 @@ class IMetadataStore(ABC):
         Trả về (status, error_msg, storage_key) của document, hoặc None nếu không tìm thấy.
         error_msg chỉ có giá trị khi status == ERROR.
         """
+        ...
+
+    # ------------------------------------------------------------------
+    # Curriculum methods
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def upsert_curriculum(
+        self,
+        course: "StoredCourse",
+        chapters: "list[StoredChapter]",
+        learning_outcomes: "list[StoredLearningOutcome]",
+        assessments: "list[StoredAssessment]",
+        lo_assessment_links: "list[tuple[str, str]]",
+    ) -> Result[None, Exception]:
+        """Insert/update toàn bộ curriculum cho một course trong một transaction."""
+        ...
+
+    @abstractmethod
+    def get_curriculum(
+        self, course_id: str
+    ) -> Result[
+        "tuple[StoredCourse, list[StoredChapter], list[StoredLearningOutcome], list[StoredAssessment]] | None",
+        Exception,
+    ]:
+        """Lấy curriculum đầy đủ theo course_id. None nếu chưa có."""
+        ...
+
+    @abstractmethod
+    def list_los_by_chapter(
+        self, course_id: str, chapter_code: str
+    ) -> Result["list[StoredLearningOutcome]", Exception]:
+        """Lấy LOs thuộc chapter (L.O.N.*) theo course_id + chapter_code."""
+        ...
+
+    @abstractmethod
+    def list_los_by_assessment(
+        self, course_id: str, assessment_code: str
+    ) -> Result["list[StoredLearningOutcome]", Exception]:
+        """Lấy LOs được evaluate bởi assessment_code."""
+        ...
+
+    @abstractmethod
+    def upsert_chunk_lo_mappings(
+        self,
+        mappings: "list[StoredChunkLOMapping]",
+    ) -> Result[None, Exception]:
+        """Bulk upsert chunk→LO mapping, ON CONFLICT update confidence + source."""
+        ...
+
+    @abstractmethod
+    def list_chunks_for_lo(
+        self, lo_id: str
+    ) -> Result["list[StoredChunkMetadata]", Exception]:
+        """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
         ...

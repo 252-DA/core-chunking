@@ -78,6 +78,26 @@ class ChunkingServiceStub(object):
                 request_serializer=chunking__pb2.HealthCheckRequest.SerializeToString,
                 response_deserializer=chunking__pb2.HealthCheckResponse.FromString,
                 _registered_method=True)
+        self.IngestCurriculum = channel.unary_unary(
+                '/chunking.ChunkingService/IngestCurriculum',
+                request_serializer=chunking__pb2.IngestCurriculumRequest.SerializeToString,
+                response_deserializer=chunking__pb2.IngestCurriculumResponse.FromString,
+                _registered_method=True)
+        self.GetCurriculum = channel.unary_unary(
+                '/chunking.ChunkingService/GetCurriculum',
+                request_serializer=chunking__pb2.GetCurriculumRequest.SerializeToString,
+                response_deserializer=chunking__pb2.GetCurriculumResponse.FromString,
+                _registered_method=True)
+        self.SearchByLearningOutcome = channel.unary_unary(
+                '/chunking.ChunkingService/SearchByLearningOutcome',
+                request_serializer=chunking__pb2.SearchByLearningOutcomeRequest.SerializeToString,
+                response_deserializer=chunking__pb2.SearchByLearningOutcomeResponse.FromString,
+                _registered_method=True)
+        self.GenerateCurriculumQuiz = channel.unary_unary(
+                '/chunking.ChunkingService/GenerateCurriculumQuiz',
+                request_serializer=chunking__pb2.GenerateCurriculumQuizRequest.SerializeToString,
+                response_deserializer=chunking__pb2.GetQuizResponse.FromString,
+                _registered_method=True)
 
 
 class ChunkingServiceServicer(object):
@@ -143,6 +163,38 @@ class ChunkingServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def IngestCurriculum(self, request, context):
+        """---------------------------------------------------------------------------
+        Curriculum-Aware layer
+        ---------------------------------------------------------------------------
+
+        Parse DCMH → extract LO graph → persist
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetCurriculum(self, request, context):
+        """Lấy curriculum đã ingest
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SearchByLearningOutcome(self, request, context):
+        """Search chunks theo LO / chapter / assessment
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GenerateCurriculumQuiz(self, request, context):
+        """Sinh quiz aligned theo LO
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ChunkingServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -185,6 +237,26 @@ def add_ChunkingServiceServicer_to_server(servicer, server):
                     servicer.HealthCheck,
                     request_deserializer=chunking__pb2.HealthCheckRequest.FromString,
                     response_serializer=chunking__pb2.HealthCheckResponse.SerializeToString,
+            ),
+            'IngestCurriculum': grpc.unary_unary_rpc_method_handler(
+                    servicer.IngestCurriculum,
+                    request_deserializer=chunking__pb2.IngestCurriculumRequest.FromString,
+                    response_serializer=chunking__pb2.IngestCurriculumResponse.SerializeToString,
+            ),
+            'GetCurriculum': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCurriculum,
+                    request_deserializer=chunking__pb2.GetCurriculumRequest.FromString,
+                    response_serializer=chunking__pb2.GetCurriculumResponse.SerializeToString,
+            ),
+            'SearchByLearningOutcome': grpc.unary_unary_rpc_method_handler(
+                    servicer.SearchByLearningOutcome,
+                    request_deserializer=chunking__pb2.SearchByLearningOutcomeRequest.FromString,
+                    response_serializer=chunking__pb2.SearchByLearningOutcomeResponse.SerializeToString,
+            ),
+            'GenerateCurriculumQuiz': grpc.unary_unary_rpc_method_handler(
+                    servicer.GenerateCurriculumQuiz,
+                    request_deserializer=chunking__pb2.GenerateCurriculumQuizRequest.FromString,
+                    response_serializer=chunking__pb2.GetQuizResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -407,6 +479,114 @@ class ChunkingService(object):
             '/chunking.ChunkingService/HealthCheck',
             chunking__pb2.HealthCheckRequest.SerializeToString,
             chunking__pb2.HealthCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def IngestCurriculum(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/IngestCurriculum',
+            chunking__pb2.IngestCurriculumRequest.SerializeToString,
+            chunking__pb2.IngestCurriculumResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetCurriculum(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/GetCurriculum',
+            chunking__pb2.GetCurriculumRequest.SerializeToString,
+            chunking__pb2.GetCurriculumResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SearchByLearningOutcome(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/SearchByLearningOutcome',
+            chunking__pb2.SearchByLearningOutcomeRequest.SerializeToString,
+            chunking__pb2.SearchByLearningOutcomeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GenerateCurriculumQuiz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/chunking.ChunkingService/GenerateCurriculumQuiz',
+            chunking__pb2.GenerateCurriculumQuizRequest.SerializeToString,
+            chunking__pb2.GetQuizResponse.FromString,
             options,
             channel_credentials,
             insecure,
