@@ -9,6 +9,7 @@ from src.domain.entities.document import Document, DocumentType
 from src.domain.exceptions import MetadataStoreError
 from src.domain.ports.metadata_store import (
     DocumentFilter,
+    DocumentSummary,
     IMetadataStore,
     IngestionStatus,
     OutboxEvent,
@@ -377,6 +378,46 @@ class PostgresMetadataStore(IMetadataStore):
             cur.execute("ALTER TABLE quiz_items ADD COLUMN IF NOT EXISTS assessment_id TEXT REFERENCES assessments(assessment_id) ON DELETE SET NULL;")
             cur.execute("ALTER TABLE quiz_items ADD COLUMN IF NOT EXISTS bloom_level TEXT;")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_quiz_items_lo ON quiz_items(lo_id);")
+
+            # ── LMS integration tables ──
+            cur.execute(
+                """
+                DO $$ BEGIN
+                  CREATE TYPE lms_type_enum AS ENUM ('openedx','moodle');
+                EXCEPTION WHEN duplicate_object THEN null;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lms_user_mappings (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    lms_type lms_type_enum NOT NULL,
+                    lms_user_id VARCHAR(255) NOT NULL,
+                    internal_user_id UUID NOT NULL DEFAULT gen_random_uuid(),
+                    email VARCHAR(255),
+                    display_name VARCHAR(255),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE(lms_type, lms_user_id)
+                );
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lum_internal ON lms_user_mappings(internal_user_id);"
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lms_course_ref (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    lms_type lms_type_enum NOT NULL,
+                    lms_course_id VARCHAR(255) NOT NULL,
+                    course_id TEXT REFERENCES courses(course_id),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE(lms_type, lms_course_id)
+                );
+                """
+            )
         conn.commit()
 
     def upsert_document(
@@ -929,6 +970,52 @@ class PostgresMetadataStore(IMetadataStore):
 
             docs = [self._row_to_document(row) for row in rows]
             return Ok(docs)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_documents(
+        self,
+        course_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Result[list[DocumentSummary], Exception]:
+        """List document summaries with chunk count, optional filter by course_id."""
+        try:
+            where_clause = ""
+            params: list = [limit, offset]
+            if course_id is not None:
+                where_clause = "WHERE d.course_id = %s"
+                params = [course_id, limit, offset]
+            query = f"""
+                SELECT d.document_id,
+                       d.document_name,
+                       d.doc_type,
+                       d.status,
+                       d.course_id,
+                       d.created_at,
+                       (SELECT count(*) FROM chunks_metadata c WHERE c.document_id = d.document_id) AS chunk_count
+                FROM documents_metadata d
+                {where_clause}
+                ORDER BY d.created_at DESC
+                LIMIT %s OFFSET %s
+            """
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, tuple(params))
+                    rows = cur.fetchall()
+            summaries = [
+                DocumentSummary(
+                    document_id=row[0],
+                    document_name=row[1],
+                    doc_type=row[2],
+                    status=row[3],
+                    course_id=row[4],
+                    created_at=row[5],
+                    chunk_count=row[6],
+                )
+                for row in rows
+            ]
+            return Ok(summaries)
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 

@@ -164,6 +164,18 @@ class StoredChunkLOMapping:
     source: str
 
 
+@dataclass(frozen=True)
+class DocumentSummary:
+    """Lightweight document listing for LMS / web admin."""
+    document_id: str
+    document_name: str
+    doc_type: str            # 'pdf' | 'docx' | ...
+    status: str              # 'PENDING' | 'PROCESSING' | 'DONE' | ...
+    course_id: str | None
+    created_at: datetime
+    chunk_count: int
+
+
 class IMetadataStore(ABC):
     """
     Port: SQL metadata + ingestion status + outbox events.
@@ -381,4 +393,18 @@ class IMetadataStore(ABC):
         self, lo_id: str
     ) -> Result["list[StoredChunkMetadata]", Exception]:
         """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
+        ...
+
+    # ------------------------------------------------------------------
+    # LMS / web admin methods
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def list_documents(
+        self,
+        course_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Result["list[DocumentSummary]", Exception]:
+        """List document summaries (có chunk_count) cho LMS/web admin, optional filter theo course_id."""
         ...

@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.domain.entities.document import Document
 from src.domain.ports.metadata_store import (
     DocumentFilter,
+    DocumentSummary,
     IMetadataStore,
     IngestionStatus,
     OutboxEvent,
@@ -166,4 +167,16 @@ class NoopMetadataStore(IMetadataStore):
     def list_chunks_for_lo(
         self, lo_id: str
     ) -> Result[list[StoredChunkMetadata], Exception]:
+        return Ok([])
+
+    # ------------------------------------------------------------------
+    # LMS / web admin methods
+    # ------------------------------------------------------------------
+
+    def list_documents(
+        self,
+        course_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Result[list[DocumentSummary], Exception]:
         return Ok([])

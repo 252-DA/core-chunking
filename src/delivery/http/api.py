@@ -33,6 +33,7 @@ from src.application.use_cases.process_document import ProcessDocumentUseCase
 from src.application.use_cases.search_chunks import SearchChunksUseCase
 from src.domain.entities.document import DocumentType, ElementType
 from src.domain.exceptions import ChunkingError, UnsupportedFileTypeError
+from src.domain.ports.metadata_store import DocumentSummary, IMetadataStore
 from src.domain.ports.parser import IParser
 from src.infrastructure.config import get_settings
 from src.infrastructure.container import Container, get_container
@@ -55,6 +56,29 @@ class DeleteDocumentHttpResponse(BaseModel):
     document_id: str
     success: bool
     message: str
+
+
+class DocumentSummaryDTO(BaseModel):
+    """Lightweight document listing response for LMS / web admin."""
+    document_id: str
+    document_name: str
+    doc_type: str
+    status: str
+    course_id: str | None
+    created_at: str
+    chunk_count: int
+
+    @classmethod
+    def from_domain(cls, ds: DocumentSummary) -> "DocumentSummaryDTO":
+        return cls(
+            document_id=ds.document_id,
+            document_name=ds.document_name,
+            doc_type=ds.doc_type,
+            status=ds.status,
+            course_id=ds.course_id,
+            created_at=ds.created_at.isoformat(),
+            chunk_count=ds.chunk_count,
+        )
 
 
 class SectionInspect(BaseModel):
@@ -283,6 +307,12 @@ def _get_parsers(
     return container.parsers
 
 
+def _get_metadata_store(
+    container: Container = Depends(_get_container),
+) -> IMetadataStore:
+    return container.metadata_store
+
+
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/docs")
@@ -296,6 +326,25 @@ def root() -> RedirectResponse:
 )
 def health_check() -> HealthResponse:
     return HealthResponse()
+
+
+@app.get(
+    "/api/documents",
+    response_model=list[DocumentSummaryDTO],
+    tags=["lms"],
+    summary="List documents for LMS / web admin",
+    description="List document summaries with chunk count. Optional filter by course_id.",
+)
+def list_documents_endpoint(
+    course_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    store: IMetadataStore = Depends(_get_metadata_store),
+) -> list[DocumentSummaryDTO]:
+    result = store.list_documents(course_id=course_id, limit=limit, offset=offset)
+    if result.is_err():
+        _raise_delivery_error(result.error)
+    return [DocumentSummaryDTO.from_domain(s) for s in result.unwrap()]
 
 
 @app.post(
