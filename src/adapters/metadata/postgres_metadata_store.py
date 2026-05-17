@@ -383,11 +383,12 @@ class PostgresMetadataStore(IMetadataStore):
             cur.execute(
                 """
                 DO $$ BEGIN
-                  CREATE TYPE lms_type_enum AS ENUM ('openedx','moodle');
+                  CREATE TYPE lms_type_enum AS ENUM ('openedx','moodle','canvas');
                 EXCEPTION WHEN duplicate_object THEN null;
                 END $$;
                 """
             )
+            cur.execute("ALTER TYPE lms_type_enum ADD VALUE IF NOT EXISTS 'canvas';")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS lms_user_mappings (

@@ -175,5 +175,5 @@ class TestPostgresMetadataStore:
         assert result.is_ok()
         chunk = result.unwrap()[0]
         assert chunk.content_text == "Chunk content"
-        assert chunk.enriched_content == "Introduction\n\nChunk content"
+        assert chunk.embedding_input == "Introduction\n\nChunk content"
         assert "LEFT JOIN chunk_contents" in cursor.execute_calls[0][0]

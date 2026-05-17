@@ -85,17 +85,18 @@ def sample_chunk(sample_document: Document) -> Chunk:
     return Chunk(
         id="chunk-001",
         content="This is chunk content for testing purposes.",
+        embedding_input="Introduction\n\nThis is chunk content for testing purposes.",
+        content_hash="fake-hash-001",
         metadata=ChunkMetadata(
             document_id=sample_document.id,
             document_name=sample_document.name,
-            doc_type=DocumentType.PDF,
+            document_type=DocumentType.PDF,
             chunk_index=0,
             heading_path=("Introduction",),
             heading_level=1,
             page_number=1,
             language="en",
         ),
-        enriched_content="Introduction\n\nThis is chunk content for testing purposes.",
     )
 
 
@@ -126,7 +127,7 @@ def sample_stored_chunk_metadata(sample_chunk: Chunk) -> StoredChunkMetadata:
         content_length=len(sample_chunk.content),
         language=sample_chunk.metadata.language,
         content_text=sample_chunk.content,
-        enriched_content=sample_chunk.enriched_content,
+        embedding_input=sample_chunk.embedding_input,
     )
 
 
