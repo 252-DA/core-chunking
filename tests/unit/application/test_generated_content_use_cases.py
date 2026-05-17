@@ -1,11 +1,11 @@
-from src.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
-from src.application.use_cases.get_document_status import (
+from document_chunk.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
+from document_chunk.application.use_cases.get_document_status import (
     GetDocumentStatusRequest,
     GetDocumentStatusUseCase,
 )
-from src.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
-from src.domain.ports.metadata_store import IngestionStatus, StoredLessonCard, StoredQuizItem
-from src.shared.result import Ok
+from document_chunk.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
+from document_chunk.domain.ports.metadata_store import IngestionStatus, StoredLessonCard, StoredQuizItem
+from document_chunk.shared.result import Ok
 
 
 class TestGeneratedContentUseCases:

@@ -1,8 +1,8 @@
 """
 Tests for domain/constants.py — EXT_MAP and MIME_MAP.
 """
-from src.domain.constants import EXT_MAP, MIME_MAP
-from src.domain.entities.document import DocumentType
+from document_chunk.domain.constants import EXT_MAP, MIME_MAP
+from document_chunk.domain.entities.document import DocumentType
 
 
 class TestExtMap:

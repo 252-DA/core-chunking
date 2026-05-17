@@ -5,14 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.application.dto.document_dto import ProcessDocumentRequest
-from src.application.use_cases.enqueue_document import (
+from document_chunk.application.dto.document_dto import ProcessDocumentRequest
+from document_chunk.application.use_cases.enqueue_document import (
     EnqueueDocumentRequest,
     EnqueueDocumentResponse,
     EnqueueDocumentUseCase,
 )
-from src.domain.exceptions import UnsupportedFileTypeError
-from src.shared.result import Err, Ok
+from document_chunk.domain.exceptions import UnsupportedFileTypeError
+from document_chunk.shared.result import Err, Ok
 
 
 class TestEnqueueDocumentRequest:

@@ -80,8 +80,7 @@ all = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
 
 [tool.black]
 line-length = 100
@@ -104,4 +103,4 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 asyncio_mode = "auto"
-addopts = "-v --cov=src --cov-report=term-missing"
+addopts = "-v --cov=document_chunk --cov-report=term-missing"

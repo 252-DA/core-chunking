@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from src.application.dto.generation_dto import (
+from document_chunk.application.dto.generation_dto import (
     CardSection,
     CardsResponse,
     DocumentStatusResponse,
@@ -10,9 +10,9 @@ from src.application.dto.generation_dto import (
     QuizQuestionItem,
     QuizResponse,
 )
-from src.delivery.http import api
-from src.domain.ports.metadata_store import IngestionStatus
-from src.shared.result import Ok
+from document_chunk.delivery.http import api
+from document_chunk.domain.ports.metadata_store import IngestionStatus
+from document_chunk.shared.result import Ok
 
 
 class _FakeContainer:

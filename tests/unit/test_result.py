@@ -3,7 +3,7 @@ Tests for shared/result.py — Ok và Err types.
 """
 import pytest
 
-from src.shared.result import Err, Ok
+from document_chunk.shared.result import Err, Ok
 
 
 class TestOk:

@@ -6,13 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.domain.entities.chunk import Chunk, ChunkMetadata
-from src.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
-from src.domain.entities.embedding import Embedding
-from src.domain.entities.search import SearchResult
-from src.domain.ports.metadata_store import StoredChunkMetadata, StoredDocumentContext
-from src.infrastructure.config import ChunkerConfig, QdrantConfig
-from src.shared.result import Ok
+from document_chunk.domain.entities.chunk import Chunk, ChunkMetadata
+from document_chunk.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
+from document_chunk.domain.entities.embedding import Embedding
+from document_chunk.domain.entities.search import SearchResult
+from document_chunk.domain.ports.metadata_store import StoredChunkMetadata, StoredDocumentContext
+from document_chunk.infrastructure.config import ChunkerConfig, QdrantConfig
+from document_chunk.shared.result import Ok
 
 # ---------------------------------------------------------------------------
 # Domain entities

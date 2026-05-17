@@ -8,19 +8,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# worker package lives outside chunking_v2 — add DA root to path
+# worker package lives outside packages-ai — add DA root to path
 _DA_ROOT = str(Path(__file__).parent.parent.parent.parent)
 if _DA_ROOT not in sys.path:
     sys.path.insert(0, _DA_ROOT)
 
-from src.domain.ports.metadata_store import (
+from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
     StoredChapter,
     StoredChunkMetadata,
     StoredCourse,
     StoredLearningOutcome,
 )
-from src.shared.result import Ok
+from document_chunk.shared.result import Ok
 from worker.worker.use_cases.generate_curriculum_quiz import (
     GenerateCurriculumQuizRequest,
     GenerateCurriculumQuizUseCase,

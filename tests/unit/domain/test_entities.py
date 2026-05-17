@@ -5,16 +5,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.domain.entities.chunk import Chunk, ChunkMetadata
-from src.domain.entities.document import (
+from document_chunk.domain.entities.chunk import Chunk, ChunkMetadata
+from document_chunk.domain.entities.document import (
     Document,
     DocumentType,
     ElementType,
     ParsedDocument,
     Section,
 )
-from src.domain.entities.embedding import Embedding
-from src.domain.entities.search import (
+from document_chunk.domain.entities.embedding import Embedding
+from document_chunk.domain.entities.search import (
     SearchFilter,
     SearchQuery,
     SearchResponse,

@@ -17,14 +17,14 @@ llama_index = pytest.importorskip(
     reason="llama-index-core chưa cài. Chạy: pip install 'document-chunk[llamaindex]'",
 )
 
-from src.adapters.chunkers.heading_chunker import HeadingChunker
-from src.adapters.chunkers.llamaindex_chunkers import (
+from document_chunk.adapters.chunkers.heading_chunker import HeadingChunker
+from document_chunk.adapters.chunkers.llamaindex_chunkers import (
     LlamaIndexSentenceChunker,
     LlamaIndexTokenChunker,
 )
-from src.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
-from src.infrastructure.config import ChunkerConfig, LlamaIndexChunkerConfig
-from src.shared.result import Ok
+from document_chunk.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
+from document_chunk.infrastructure.config import ChunkerConfig, LlamaIndexChunkerConfig
+from document_chunk.shared.result import Ok
 from pathlib import Path
 
 

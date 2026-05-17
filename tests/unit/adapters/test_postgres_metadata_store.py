@@ -1,12 +1,12 @@
 from contextlib import contextmanager
 
-from src.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
-from src.domain.ports.metadata_store import (
+from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+from document_chunk.domain.ports.metadata_store import (
     StoredChunkMetadata,
     StoredLessonCard,
     StoredQuizItem,
 )
-from src.infrastructure.config import OutboxConfig, SqlConfig
+from document_chunk.infrastructure.config import OutboxConfig, SqlConfig
 
 
 class _FakeCursor:

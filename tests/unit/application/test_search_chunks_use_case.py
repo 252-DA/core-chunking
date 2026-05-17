@@ -1,6 +1,6 @@
-from src.application.dto.search_dto import SearchRequest
-from src.application.use_cases.search_chunks import SearchChunksUseCase
-from src.domain.entities.document import DocumentType
+from document_chunk.application.dto.search_dto import SearchRequest
+from document_chunk.application.use_cases.search_chunks import SearchChunksUseCase
+from document_chunk.domain.entities.document import DocumentType
 
 
 class TestSearchChunksUseCase:

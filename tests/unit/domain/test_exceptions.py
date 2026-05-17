@@ -3,7 +3,7 @@ Tests for domain exceptions hierarchy.
 """
 import pytest
 
-from src.domain.exceptions import (
+from document_chunk.domain.exceptions import (
     ChunkingError,
     ChunkError,
     EmbedError,

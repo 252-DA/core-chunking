@@ -3,15 +3,15 @@ Unit tests for HeuristicLoMapper — heading-only chunk→LO mapper.
 """
 import pytest
 
-from src.adapters.curriculum.heuristic_lo_mapper import HeuristicLoMapper
-from src.domain.entities.curriculum import (
+from document_chunk.adapters.curriculum.heuristic_lo_mapper import HeuristicLoMapper
+from document_chunk.domain.entities.curriculum import (
     Assessment,
     Chapter,
     Course,
     Curriculum,
     LearningOutcome,
 )
-from src.domain.ports.metadata_store import StoredChunkMetadata
+from document_chunk.domain.ports.metadata_store import StoredChunkMetadata
 
 
 @pytest.fixture

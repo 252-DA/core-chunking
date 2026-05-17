@@ -3,8 +3,8 @@ Tests for adapters/chunkers/toc_detector.py — rule-based Table of Contents det
 """
 import pytest
 
-from src.adapters.chunkers.toc_detector import annotate_toc, detect_toc
-from src.domain.entities.document import ElementType, Section
+from document_chunk.adapters.chunkers.toc_detector import annotate_toc, detect_toc
+from document_chunk.domain.entities.document import ElementType, Section
 
 
 # ---------------------------------------------------------------------------

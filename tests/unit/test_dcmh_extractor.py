@@ -5,9 +5,9 @@ Uses a synthetic DCMH text that mimics CO3115 CDIO format.
 """
 import pytest
 
-from src.adapters.curriculum.dcmh_extractor import DcmhExtractor
-from src.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
-from src.shared.result import Ok
+from document_chunk.adapters.curriculum.dcmh_extractor import DcmhExtractor
+from document_chunk.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
+from document_chunk.shared.result import Ok
 
 
 _SYNTHETIC_DCMH = """\

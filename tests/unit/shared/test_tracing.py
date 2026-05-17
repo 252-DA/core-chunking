@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.shared.tracing import (
+from document_chunk.shared.tracing import (
     get_current_span_id,
     get_current_trace_id,
     get_tracer,
@@ -15,10 +15,10 @@ from src.shared.tracing import (
 
 class TestSetupTracing:
     def test_debug_mode_adds_console_exporter(self):
-        with patch("src.shared.tracing.TracerProvider") as mock_provider_cls, \
-             patch("src.shared.tracing.BatchSpanProcessor") as mock_batch, \
-             patch("src.shared.tracing.ConsoleSpanExporter") as mock_console, \
-             patch("src.shared.tracing.trace.set_tracer_provider"):
+        with patch("document_chunk.shared.tracing.TracerProvider") as mock_provider_cls, \
+             patch("document_chunk.shared.tracing.BatchSpanProcessor") as mock_batch, \
+             patch("document_chunk.shared.tracing.ConsoleSpanExporter") as mock_console, \
+             patch("document_chunk.shared.tracing.trace.set_tracer_provider"):
             mock_provider = MagicMock()
             mock_provider_cls.return_value = mock_provider
 
@@ -27,10 +27,10 @@ class TestSetupTracing:
             mock_provider.add_span_processor.assert_called_once()
 
     def test_otlp_mode_adds_otlp_exporter(self):
-        with patch("src.shared.tracing.TracerProvider") as mock_provider_cls, \
-             patch("src.shared.tracing.BatchSpanProcessor") as mock_batch, \
-             patch("src.shared.tracing.OTLPSpanExporter") as mock_otlp, \
-             patch("src.shared.tracing.trace.set_tracer_provider"):
+        with patch("document_chunk.shared.tracing.TracerProvider") as mock_provider_cls, \
+             patch("document_chunk.shared.tracing.BatchSpanProcessor") as mock_batch, \
+             patch("document_chunk.shared.tracing.OTLPSpanExporter") as mock_otlp, \
+             patch("document_chunk.shared.tracing.trace.set_tracer_provider"):
             mock_provider = MagicMock()
             mock_provider_cls.return_value = mock_provider
 
@@ -43,8 +43,8 @@ class TestSetupTracing:
             mock_provider.add_span_processor.assert_called_once()
 
     def test_no_endpoint_no_debug_no_export(self):
-        with patch("src.shared.tracing.TracerProvider") as mock_provider_cls, \
-             patch("src.shared.tracing.trace.set_tracer_provider"):
+        with patch("document_chunk.shared.tracing.TracerProvider") as mock_provider_cls, \
+             patch("document_chunk.shared.tracing.trace.set_tracer_provider"):
             mock_provider = MagicMock()
             mock_provider_cls.return_value = mock_provider
 

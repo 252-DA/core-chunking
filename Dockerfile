@@ -4,6 +4,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH="/app/src" \
     LLM__PROVIDER=gemini \
     LLM__MODEL=gemini-3-flash-preview
 
@@ -33,4 +34,4 @@ COPY examples/ examples/
 EXPOSE 50051 8000
 
 ENTRYPOINT ["python", "-m"]
-CMD ["src.delivery.grpc.server"]
+CMD ["document_chunk.delivery.grpc.server"]

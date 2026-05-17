@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from src.application.dto.generation_dto import (
+from document_chunk.application.dto.generation_dto import (
     CardSection,
     CardsResponse,
     DocumentStatusResponse,
@@ -8,12 +8,12 @@ from src.application.dto.generation_dto import (
     QuizQuestionItem,
     QuizResponse,
 )
-from src.application.dto.search_dto import SearchResponse
-from src.application.use_cases.delete_document import DeleteDocumentResponse
-from src.delivery.grpc.proto import chunking_pb2
-from src.delivery.grpc.servicer import ChunkingServicer
-from src.domain.ports.metadata_store import IngestionStatus
-from src.shared.result import Ok
+from document_chunk.application.dto.search_dto import SearchResponse
+from document_chunk.application.use_cases.delete_document import DeleteDocumentResponse
+from document_chunk.delivery.grpc.proto import chunking_pb2
+from document_chunk.delivery.grpc.servicer import ChunkingServicer
+from document_chunk.domain.ports.metadata_store import IngestionStatus
+from document_chunk.shared.result import Ok
 
 
 class _FakeContext:

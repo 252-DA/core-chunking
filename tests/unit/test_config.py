@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from src.infrastructure.config import (
+from document_chunk.infrastructure.config import (
     AppConfig,
     ChunkerConfig,
     EmbedderConfig,
