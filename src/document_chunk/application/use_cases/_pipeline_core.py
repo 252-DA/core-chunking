@@ -185,12 +185,7 @@ class PipelineCore:
 
             embeddings = embed_result.unwrap()
 
-            # 8. Status → UPSERTING
-            r = self._metadata_store.update_document_status(document_id, IngestionStatus.UPSERTING)
-            if r.is_err():
-                return self._fail(document_id, doc_type, r.error)
-
-            # 9. Upsert to vector store
+            # 8. Upsert to vector store while document remains EMBEDDING.
             _t = time.perf_counter()
             with tracer.start_as_current_span("upsert"):
                 upsert_result = self._vector_store.upsert(chunks, embeddings)
@@ -228,9 +223,9 @@ class PipelineCore:
             if outbox_result.is_err():
                 return self._fail(document_id, doc_type, outbox_result.error)
 
-            # 12. Status → DONE
+            # 12. Status → INDEXED. Content generation is a separate explicit request.
             status_result = self._metadata_store.update_document_status(
-                document_id, IngestionStatus.DONE
+                document_id, IngestionStatus.INDEXED
             )
             if status_result.is_err():
                 return self._fail(document_id, doc_type, status_result.error)

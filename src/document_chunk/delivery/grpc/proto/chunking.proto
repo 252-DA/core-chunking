@@ -95,7 +95,7 @@ message GetDocumentStatusRequest {
 
 message GetDocumentStatusResponse {
   string document_id = 1;
-  string status      = 2;  // "QUEUED" | "PARSING" | "CHUNKING" | "EMBEDDING" | "UPSERTING" | "DONE" | "ENRICHING" | "ENRICHED" | "ERROR"
+  string status      = 2;  // "QUEUED" | "PARSING" | "CHUNKING" | "EMBEDDING" | "INDEXED" | "ENRICHING" | "GENERATED_DRAFT" | "ERROR"
   string error_msg   = 3;  // populated khi status == "ERROR"
   string storage_key = 4;  // MinIO key, populated sau khi file được upload
 }

@@ -8,15 +8,22 @@ from document_chunk.shared.result import Result
 
 
 class IngestionStatus(str, Enum):
+    PENDING = "PENDING"
+    UPLOADING = "UPLOADING"
+    UPLOADED = "UPLOADED"
     QUEUED = "QUEUED"
     PARSING = "PARSING"
     CHUNKING = "CHUNKING"
     EMBEDDING = "EMBEDDING"
-    UPSERTING = "UPSERTING"
-    DONE = "DONE"
     ENRICHING = "ENRICHING"
-    ENRICHED = "ENRICHED"
+    INDEXED = "INDEXED"
+    GENERATED_DRAFT = "GENERATED_DRAFT"
     ERROR = "ERROR"
+    # Backward-compatible aliases. These names may still be imported by older
+    # delivery tests/clients, but their values map to the report state machine.
+    UPSERTING = "EMBEDDING"
+    DONE = "INDEXED"
+    ENRICHED = "GENERATED_DRAFT"
 
 
 @dataclass(frozen=True)
@@ -170,7 +177,7 @@ class DocumentSummary:
     document_id: str
     document_name: str
     doc_type: str            # 'pdf' | 'docx' | ...
-    status: str              # 'PENDING' | 'PROCESSING' | 'DONE' | ...
+    status: str              # report state machine, e.g. 'QUEUED' | 'INDEXED' | 'ERROR'
     course_id: str | None
     created_at: datetime
     chunk_count: int

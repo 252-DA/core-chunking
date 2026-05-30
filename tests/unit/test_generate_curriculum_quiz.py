@@ -8,10 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# worker package lives outside packages-ai — add DA root to path
-_DA_ROOT = str(Path(__file__).parent.parent.parent.parent)
-if _DA_ROOT not in sys.path:
-    sys.path.insert(0, _DA_ROOT)
+# worker package lives outside packages-ai — add worker directory to path
+_WORKER_DIR = str(Path(__file__).parent.parent.parent.parent / "worker")
+if _WORKER_DIR not in sys.path:
+    sys.path.insert(0, _WORKER_DIR)
 
 from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
@@ -21,7 +21,7 @@ from document_chunk.domain.ports.metadata_store import (
     StoredLearningOutcome,
 )
 from document_chunk.shared.result import Ok
-from worker.worker.use_cases.generate_curriculum_quiz import (
+from worker.use_cases.generate_curriculum_quiz import (
     GenerateCurriculumQuizRequest,
     GenerateCurriculumQuizUseCase,
 )

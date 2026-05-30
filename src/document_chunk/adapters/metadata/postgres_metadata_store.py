@@ -36,6 +36,13 @@ tracer = get_tracer(__name__)
 _EVENT_DOCUMENT_DELETED = "document_deleted"
 
 
+def _stable_uuid(value: str) -> str:
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, str(value)))
+
+
 class PostgresMetadataStore(IMetadataStore):
     def __init__(self, sql_config: SqlConfig, outbox_config: OutboxConfig) -> None:
         self._sql_config = sql_config
@@ -109,10 +116,13 @@ class PostgresMetadataStore(IMetadataStore):
             if self._schema_initialized:
                 return
 
-            self._ensure_schema(conn)
+            # Schema is owned by core-api/prisma/migrations/0_init/migration.sql.
+            # This worker must not recreate the historical documents_metadata /
+            # chunks_metadata / chunk_contents schema against the report DDL.
             self._schema_initialized = True
 
     def _ensure_schema(self, conn) -> None:
+        return
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -435,47 +445,37 @@ class PostgresMetadataStore(IMetadataStore):
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            INSERT INTO documents_metadata (
+                            INSERT INTO documents (
                                 document_id,
-                                document_name,
-                                doc_type,
-                                mime_type,
-                                size_bytes,
-                                storage_key,
                                 course_id,
-                                owner_id,
-                                language,
+                                title,
+                                file_path,
+                                mime_type,
+                                checksum,
                                 status,
-                                metadata_json,
-                                updated_at
+                                created_by
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::uuid)
                             ON CONFLICT (document_id)
                             DO UPDATE SET
-                                document_name = EXCLUDED.document_name,
-                                doc_type = EXCLUDED.doc_type,
-                                mime_type = EXCLUDED.mime_type,
-                                size_bytes = EXCLUDED.size_bytes,
-                                storage_key = EXCLUDED.storage_key,
                                 course_id = EXCLUDED.course_id,
-                                owner_id = EXCLUDED.owner_id,
-                                language = EXCLUDED.language,
+                                title = EXCLUDED.title,
+                                file_path = EXCLUDED.file_path,
+                                mime_type = EXCLUDED.mime_type,
+                                checksum = EXCLUDED.checksum,
                                 status = EXCLUDED.status,
-                                metadata_json = EXCLUDED.metadata_json,
-                                updated_at = NOW();
+                                created_by = COALESCE(EXCLUDED.created_by, documents.created_by),
+                                deleted_at = NULL;
                             """,
                             (
                                 document.id,
-                                document.name,
-                                document.doc_type.value,
-                                document.mime_type,
-                                document.size_bytes,
-                                metadata.get("storage_key"),
                                 metadata.get("course_id"),
-                                metadata.get("owner_id"),
-                                metadata.get("language"),
+                                document.name,
+                                metadata.get("storage_key") or str(document.path or document.name),
+                                document.mime_type,
+                                metadata.get("checksum"),
                                 status.value,
-                                json.dumps(metadata),
+                                metadata.get("owner_id"),
                             ),
                         )
                     conn.commit()
@@ -494,13 +494,12 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        UPDATE documents_metadata
+                        UPDATE documents
                         SET status = %s,
-                            error_msg = %s,
-                            updated_at = NOW()
-                        WHERE document_id = %s;
+                            deleted_at = NULL
+                        WHERE document_id = %s::uuid;
                         """,
-                        (status.value, error_msg, document_id),
+                        (status.value, document_id),
                     )
                 conn.commit()
             return Ok(None)
@@ -561,10 +560,11 @@ class PostgresMetadataStore(IMetadataStore):
                         """
                         SELECT document_id,
                                course_id,
-                               owner_id,
-                               language
-                        FROM documents_metadata
-                        WHERE document_id = %s;
+                               created_by,
+                               'vi' AS language
+                        FROM documents
+                        WHERE document_id = %s::uuid
+                          AND deleted_at IS NULL;
                         """,
                         (document_id,),
                     )
@@ -590,21 +590,20 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT cm.chunk_id,
-                               cm.document_id,
-                               cm.chunk_index,
-                               cm.heading_path,
-                               cm.heading_level,
-                               cm.page_number,
-                               cm.content_length,
-                               cm.language,
-                               cc.content_text,
-                               cc.embedding_input
-                        FROM chunks_metadata cm
-                        LEFT JOIN chunk_contents cc
-                          ON cc.chunk_id = cm.chunk_id
-                        WHERE cm.document_id = %s
-                        ORDER BY cm.chunk_index ASC;
+                        SELECT chunk_id,
+                               document_id,
+                               sort_order,
+                               heading_path,
+                               0 AS heading_level,
+                               page_number,
+                               length(content) AS content_length,
+                               language,
+                               content,
+                               NULL AS embedding_input
+                        FROM chunks
+                        WHERE document_id = %s::uuid
+                          AND deleted_at IS NULL
+                        ORDER BY sort_order ASC;
                         """,
                         (document_id,),
                     )
@@ -704,21 +703,20 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT lc.id,
-                               lc.document_id,
-                               lc.primary_chunk_id,
+                        SELECT lc.card_id::text,
+                               c.document_id::text,
+                               c.chunk_id::text,
                                lc.source_chunk_ids,
-                               lc.heading_path,
                                lc.title,
-                               lc.bullets,
-                               lc.key_insight,
-                               lc.card_index,
-                               lc.model_id
+                               lc.content,
+                               row_number() OVER (ORDER BY c.sort_order ASC, lc.created_at ASC) - 1 AS card_index
                         FROM lesson_cards lc
-                        INNER JOIN chunks_metadata cm
-                          ON cm.chunk_id = lc.primary_chunk_id
-                        WHERE lc.document_id = %s
-                        ORDER BY cm.chunk_index ASC, lc.card_index ASC, lc.id ASC;
+                        JOIN chunks c
+                          ON c.chunk_id = ANY(lc.source_chunk_ids)
+                        WHERE c.document_id = %s::uuid
+                          AND lc.deleted_at IS NULL
+                          AND c.deleted_at IS NULL
+                        ORDER BY c.sort_order ASC, lc.created_at ASC, lc.card_id ASC;
                         """,
                         (document_id,),
                     )
@@ -731,12 +729,12 @@ class PostgresMetadataStore(IMetadataStore):
                         document_id=row[1],
                         primary_chunk_id=row[2],
                         source_chunk_ids=tuple(row[3] or ()),
-                        heading_path=tuple(row[4] or ()),
-                        title=row[5],
-                        bullets=tuple(row[6] or ()),
-                        key_insight=row[7],
-                        card_index=row[8],
-                        model_id=row[9],
+                        heading_path=tuple((row[5] or {}).get("heading_path") or ()),
+                        title=row[4],
+                        bullets=tuple((row[5] or {}).get("bullets") or ()),
+                        key_insight=(row[5] or {}).get("key_insight"),
+                        card_index=row[6],
+                        model_id=None,
                     )
                     for row in rows
                 ]
@@ -750,23 +748,22 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT qi.id,
-                               qi.document_id,
-                               qi.primary_chunk_id,
+                        SELECT qi.quiz_id::text,
+                               c.document_id::text,
+                               c.chunk_id::text,
                                qi.source_chunk_ids,
-                               qi.heading_path,
                                qi.question,
-                               qi.choices,
-                               qi.correct_index,
+                               qi.options,
+                               qi.correct_answer,
                                qi.explanation,
-                               qi.difficulty,
-                               qi.question_index,
-                               qi.model_id
+                               row_number() OVER (ORDER BY c.sort_order ASC, qi.created_at ASC) - 1 AS question_index
                         FROM quiz_items qi
-                        INNER JOIN chunks_metadata cm
-                          ON cm.chunk_id = qi.primary_chunk_id
-                        WHERE qi.document_id = %s
-                        ORDER BY cm.chunk_index ASC, qi.question_index ASC, qi.id ASC;
+                        JOIN chunks c
+                          ON c.chunk_id = ANY(qi.source_chunk_ids)
+                        WHERE c.document_id = %s::uuid
+                          AND qi.deleted_at IS NULL
+                          AND c.deleted_at IS NULL
+                        ORDER BY c.sort_order ASC, qi.created_at ASC, qi.quiz_id ASC;
                         """,
                         (document_id,),
                     )
@@ -779,14 +776,14 @@ class PostgresMetadataStore(IMetadataStore):
                         document_id=row[1],
                         primary_chunk_id=row[2],
                         source_chunk_ids=tuple(row[3] or ()),
-                        heading_path=tuple(row[4] or ()),
-                        question=row[5],
-                        choices=tuple(row[6] or ()),
-                        correct_index=row[7],
-                        explanation=row[8],
-                        difficulty=row[9],
-                        question_index=row[10],
-                        model_id=row[11],
+                        heading_path=tuple(),
+                        question=row[4],
+                        choices=tuple(row[5] or ()),
+                        correct_index=(row[5] or []).index(row[6]) if row[6] in (row[5] or []) else 0,
+                        explanation=row[7],
+                        difficulty="medium",
+                        question_index=row[8],
+                        model_id=None,
                     )
                     for row in rows
                 ]
@@ -822,18 +819,18 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT id::text,
+                        SELECT event_id::text,
                                event_type,
-                               aggregate_id,
-                               payload_json::text,
+                               aggregate_id::text,
+                               payload::text,
                                status,
-                               attempts,
-                               error_msg,
-                               created_at,
-                               updated_at
+                               retry_count,
+                               last_error,
+                               occurred_at,
+                               COALESCE(processed_at, occurred_at)
                         FROM outbox_events
                         WHERE status = 'PENDING'
-                        ORDER BY created_at ASC
+                        ORDER BY occurred_at ASC
                         LIMIT %s;
                         """,
                         (limit,),
@@ -865,9 +862,9 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         UPDATE outbox_events
-                        SET status = 'DONE',
-                            updated_at = NOW()
-                        WHERE id = %s::uuid;
+                        SET status = 'PROCESSED',
+                            processed_at = NOW()
+                        WHERE event_id = %s::uuid;
                         """,
                         (event_id,),
                     )
@@ -883,14 +880,13 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         UPDATE outbox_events
-                        SET attempts = attempts + 1,
-                            error_msg = %s,
+                        SET retry_count = retry_count + 1,
+                            last_error = %s,
                             status = CASE
-                                WHEN attempts + 1 >= %s THEN 'FAILED'
+                                WHEN retry_count + 1 >= %s THEN 'FAILED'
                                 ELSE 'PENDING'
-                            END,
-                            updated_at = NOW()
-                        WHERE id = %s::uuid;
+                            END
+                        WHERE event_id = %s::uuid;
                         """,
                         (error_msg, self._outbox_config.max_attempts, event_id),
                     )
@@ -906,13 +902,13 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         SELECT document_id,
-                               document_name,
-                               doc_type,
+                               title,
                                mime_type,
-                               size_bytes,
+                               file_path,
                                created_at
-                        FROM documents_metadata
-                        WHERE document_id = %s;
+                        FROM documents
+                        WHERE document_id = %s::uuid
+                          AND deleted_at IS NULL;
                         """,
                         (document_id,),
                     )
@@ -934,22 +930,23 @@ class PostgresMetadataStore(IMetadataStore):
         try:
             query = """
                 SELECT document_id,
-                       document_name,
-                       doc_type,
+                       title,
                        mime_type,
-                       size_bytes,
+                       file_path,
                        created_at
-                FROM documents_metadata
+                FROM documents
             """
-            where_clauses: list[str] = []
+            where_clauses: list[str] = ["deleted_at IS NULL"]
             params: list = []
 
             if filters:
                 if filters.doc_types:
-                    where_clauses.append("doc_type = ANY(%s)")
-                    params.append([dt.value for dt in filters.doc_types])
+                    where_clauses.append("mime_type = ANY(%s)")
+                    params.append([self._mime_for_doc_type(dt) for dt in filters.doc_types])
                 if filters.language:
-                    where_clauses.append("language = %s")
+                    where_clauses.append("%s = %s")
+                    params.append(filters.language)
+                    params.append(filters.language)
                     params.append(filters.language)
                 if filters.uploaded_after:
                     where_clauses.append("created_at >= %s")
@@ -958,8 +955,7 @@ class PostgresMetadataStore(IMetadataStore):
                     where_clauses.append("created_at <= %s")
                     params.append(filters.uploaded_before)
 
-            if where_clauses:
-                query += " WHERE " + " AND ".join(where_clauses)
+            query += " WHERE " + " AND ".join(where_clauses)
 
             query += " ORDER BY created_at DESC LIMIT %s OFFSET %s;"
             params.extend([limit, offset])
@@ -985,17 +981,19 @@ class PostgresMetadataStore(IMetadataStore):
             where_clause = ""
             params: list = [limit, offset]
             if course_id is not None:
-                where_clause = "WHERE d.course_id = %s"
+                where_clause = "WHERE d.course_id = %s::uuid AND d.deleted_at IS NULL"
                 params = [course_id, limit, offset]
+            else:
+                where_clause = "WHERE d.deleted_at IS NULL"
             query = f"""
                 SELECT d.document_id,
-                       d.document_name,
-                       d.doc_type,
+                       d.title,
+                       d.mime_type,
                        d.status,
                        d.course_id,
                        d.created_at,
-                       (SELECT count(*) FROM chunks_metadata c WHERE c.document_id = d.document_id) AS chunk_count
-                FROM documents_metadata d
+                       (SELECT count(*) FROM chunks c WHERE c.document_id = d.document_id AND c.deleted_at IS NULL) AS chunk_count
+                FROM documents d
                 {where_clause}
                 ORDER BY d.created_at DESC
                 LIMIT %s OFFSET %s
@@ -1029,7 +1027,7 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         DELETE FROM outbox_events
-                        WHERE aggregate_id = %s
+                        WHERE aggregate_id = %s::uuid
                           AND status = 'PENDING';
                         """,
                         (document_id,),
@@ -1037,27 +1035,30 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         INSERT INTO outbox_events (
-                            id,
+                            event_id,
                             event_type,
+                            aggregate_type,
                             aggregate_id,
-                            payload_json,
+                            payload,
                             status,
-                            attempts,
-                            error_msg,
-                            updated_at
+                            retry_count,
+                            last_error
                         )
-                        VALUES (%s, %s, %s, %s::jsonb, 'PENDING', 0, NULL, NOW());
+                        VALUES (%s::uuid, %s, 'document', %s::uuid, %s::jsonb, 'PENDING', 0, NULL);
                         """,
                         (
                             event_id,
-                            _EVENT_DOCUMENT_DELETED,
+                            "DOCUMENT_DELETED",
                             document_id,
                             json.dumps({"document_id": document_id}),
                         ),
                     )
-                    cur.execute("DELETE FROM chunks_metadata WHERE document_id = %s;", (document_id,))
                     cur.execute(
-                        "DELETE FROM documents_metadata WHERE document_id = %s;",
+                        "UPDATE chunks SET deleted_at = NOW() WHERE document_id = %s::uuid;",
+                        (document_id,),
+                    )
+                    cur.execute(
+                        "UPDATE documents SET deleted_at = NOW() WHERE document_id = %s::uuid;",
                         (document_id,),
                     )
                 conn.commit()
@@ -1075,9 +1076,10 @@ class PostgresMetadataStore(IMetadataStore):
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            SELECT status, error_msg, storage_key
-                            FROM documents_metadata
-                            WHERE document_id = %s;
+                            SELECT status, NULL AS error_msg, file_path
+                            FROM documents
+                            WHERE document_id = %s::uuid
+                              AND deleted_at IS NULL;
                             """,
                             (document_id,),
                         )
@@ -1106,57 +1108,75 @@ class PostgresMetadataStore(IMetadataStore):
                     cur.execute(
                         """
                         INSERT INTO courses (
-                            course_id, code, title_vi, title_en, credits, semester,
-                            source_document_id, extraction_confidence, updated_at
+                            course_id, code, name, description, updated_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        VALUES (%s::uuid, %s, %s, %s, NOW())
                         ON CONFLICT (course_id) DO UPDATE SET
                             code = EXCLUDED.code,
-                            title_vi = EXCLUDED.title_vi,
-                            title_en = EXCLUDED.title_en,
-                            credits = EXCLUDED.credits,
-                            semester = EXCLUDED.semester,
-                            source_document_id = EXCLUDED.source_document_id,
-                            extraction_confidence = EXCLUDED.extraction_confidence,
+                            name = EXCLUDED.name,
+                            description = EXCLUDED.description,
                             updated_at = NOW();
                         """,
                         (
-                            course.course_id, course.code, course.title_vi, course.title_en,
-                            course.credits, course.semester, course.source_document_id,
-                            course.extraction_confidence,
+                            _stable_uuid(course.course_id),
+                            course.code,
+                            course.title_vi,
+                            course.title_en or course.semester,
                         ),
                     )
 
                     if chapters:
                         cur.executemany(
                             """
-                            INSERT INTO chapters (chapter_id, course_id, code, title, order_index)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (course_id, code) DO UPDATE SET
-                                title = EXCLUDED.title, order_index = EXCLUDED.order_index;
-                            """,
-                            [(c.chapter_id, c.course_id, c.code, c.title, c.order_index) for c in chapters],
-                        )
-
-                    if learning_outcomes:
-                        cur.executemany(
-                            """
-                            INSERT INTO learning_outcomes (
-                                lo_id, course_id, code, parent_code,
-                                statement_vi, statement_en, bloom_level, cdio_level
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (course_id, code) DO UPDATE SET
-                                parent_code = EXCLUDED.parent_code,
-                                statement_vi = EXCLUDED.statement_vi,
-                                statement_en = EXCLUDED.statement_en,
-                                bloom_level = EXCLUDED.bloom_level,
-                                cdio_level = EXCLUDED.cdio_level;
+                            INSERT INTO chapters (chapter_id, course_id, title, sort_order, deleted_at)
+                            VALUES (%s::uuid, %s::uuid, %s, %s, NULL)
+                            ON CONFLICT (chapter_id) DO UPDATE SET
+                                title = EXCLUDED.title,
+                                sort_order = EXCLUDED.sort_order,
+                                deleted_at = NULL;
                             """,
                             [
                                 (
-                                    lo.lo_id, lo.course_id, lo.code, lo.parent_code,
-                                    lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level,
+                                    _stable_uuid(c.chapter_id),
+                                    _stable_uuid(c.course_id),
+                                    f"{c.code} {c.title}".strip(),
+                                    c.order_index,
+                                )
+                                for c in chapters
+                            ],
+                        )
+
+                    if learning_outcomes:
+                        chapter_by_code = {c.code: c.chapter_id for c in chapters}
+                        cur.executemany(
+                            """
+                            INSERT INTO learning_outcomes (
+                                lo_id, chapter_id, code, statement_vi, statement_en,
+                                bloom_level, cdio_level, academic_year, version, is_current, deleted_at
+                            )
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, 'default', 1, TRUE, NULL)
+                            ON CONFLICT (chapter_id, code, academic_year, version) DO UPDATE SET
+                                statement_vi = EXCLUDED.statement_vi,
+                                statement_en = EXCLUDED.statement_en,
+                                bloom_level = EXCLUDED.bloom_level,
+                                cdio_level = EXCLUDED.cdio_level,
+                                is_current = TRUE,
+                                deleted_at = NULL;
+                            """,
+                            [
+                                (
+                                    _stable_uuid(lo.lo_id),
+                                    _stable_uuid(
+                                        chapter_by_code.get(
+                                            self._chapter_code_from_lo(lo.code),
+                                            f"{lo.course_id}:CH{self._chapter_code_from_lo(lo.code)}",
+                                        )
+                                    ),
+                                    lo.code,
+                                    lo.statement_vi,
+                                    lo.statement_en,
+                                    self._bloom_level(lo.bloom_level),
+                                    self._cdio_level(lo.cdio_level),
                                 )
                                 for lo in learning_outcomes
                             ],
@@ -1166,18 +1186,26 @@ class PostgresMetadataStore(IMetadataStore):
                         cur.executemany(
                             """
                             INSERT INTO assessments (
-                                assessment_id, course_id, code, name_vi, name_en, category, weight
+                                assessment_id, course_id, title, max_points, sort_order, type, deleted_at
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (course_id, code) DO UPDATE SET
-                                name_vi = EXCLUDED.name_vi,
-                                name_en = EXCLUDED.name_en,
-                                category = EXCLUDED.category,
-                                weight = EXCLUDED.weight;
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, NULL)
+                            ON CONFLICT (assessment_id) DO UPDATE SET
+                                title = EXCLUDED.title,
+                                max_points = EXCLUDED.max_points,
+                                sort_order = EXCLUDED.sort_order,
+                                type = EXCLUDED.type,
+                                deleted_at = NULL;
                             """,
                             [
-                                (a.assessment_id, a.course_id, a.code, a.name_vi, a.name_en, a.category, a.weight)
-                                for a in assessments
+                                (
+                                    _stable_uuid(a.assessment_id),
+                                    _stable_uuid(a.course_id),
+                                    a.name_vi,
+                                    a.weight or 100,
+                                    index + 1,
+                                    "QUIZ" if a.category.lower() == "quiz" else "ASSIGNMENT",
+                                )
+                                for index, a in enumerate(assessments)
                             ],
                         )
 
@@ -1185,10 +1213,10 @@ class PostgresMetadataStore(IMetadataStore):
                         cur.executemany(
                             """
                             INSERT INTO lo_assessments (lo_id, assessment_id)
-                            VALUES (%s, %s)
+                            VALUES (%s::uuid, %s::uuid)
                             ON CONFLICT DO NOTHING;
                             """,
-                            lo_assessment_links,
+                            [(_stable_uuid(lo_id), _stable_uuid(assessment_id)) for lo_id, assessment_id in lo_assessment_links],
                         )
                 conn.commit()
             return Ok(None)
@@ -1205,33 +1233,53 @@ class PostgresMetadataStore(IMetadataStore):
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT course_id, code, title_vi, title_en, credits, semester, "
-                        "source_document_id, extraction_confidence FROM courses WHERE course_id = %s;",
-                        (course_id,),
+                        """
+                        SELECT course_id::text, code, name, description
+                        FROM courses
+                        WHERE course_id = %s::uuid
+                          AND deleted_at IS NULL;
+                        """,
+                        (_stable_uuid(course_id),),
                     )
                     row = cur.fetchone()
                     if row is None:
                         return Ok(None)
                     course = StoredCourse(
                         course_id=row[0], code=row[1], title_vi=row[2], title_en=row[3],
-                        credits=row[4], semester=row[5], source_document_id=row[6],
-                        extraction_confidence=row[7],
                     )
 
                     cur.execute(
-                        "SELECT chapter_id, course_id, code, title, order_index FROM chapters "
-                        "WHERE course_id = %s ORDER BY order_index;",
-                        (course_id,),
+                        """
+                        SELECT chapter_id::text, course_id::text, title, sort_order
+                        FROM chapters
+                        WHERE course_id = %s::uuid
+                          AND deleted_at IS NULL
+                        ORDER BY sort_order;
+                        """,
+                        (_stable_uuid(course_id),),
                     )
                     chapters = [
-                        StoredChapter(chapter_id=r[0], course_id=r[1], code=r[2], title=r[3], order_index=r[4])
+                        StoredChapter(
+                            chapter_id=r[0],
+                            course_id=r[1],
+                            code=str(r[3]),
+                            title=r[2],
+                            order_index=r[3],
+                        )
                         for r in cur.fetchall()
                     ]
 
                     cur.execute(
-                        "SELECT lo_id, course_id, code, parent_code, statement_vi, statement_en, "
-                        "bloom_level, cdio_level FROM learning_outcomes WHERE course_id = %s;",
-                        (course_id,),
+                        """
+                        SELECT lo.lo_id::text, ch.course_id::text, lo.code, NULL AS parent_code,
+                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level
+                        FROM learning_outcomes lo
+                        JOIN chapters ch ON ch.chapter_id = lo.chapter_id
+                        WHERE ch.course_id = %s::uuid
+                          AND lo.deleted_at IS NULL
+                          AND lo.is_current = TRUE;
+                        """,
+                        (_stable_uuid(course_id),),
                     )
                     los = [
                         StoredLearningOutcome(
@@ -1242,14 +1290,18 @@ class PostgresMetadataStore(IMetadataStore):
                     ]
 
                     cur.execute(
-                        "SELECT assessment_id, course_id, code, name_vi, name_en, category, weight "
-                        "FROM assessments WHERE course_id = %s;",
-                        (course_id,),
+                        """
+                        SELECT assessment_id::text, course_id::text, title, type, max_points
+                        FROM assessments
+                        WHERE course_id = %s::uuid
+                          AND deleted_at IS NULL;
+                        """,
+                        (_stable_uuid(course_id),),
                     )
                     assessments = [
                         StoredAssessment(
-                            assessment_id=r[0], course_id=r[1], code=r[2], name_vi=r[3],
-                            name_en=r[4], category=r[5], weight=r[6],
+                            assessment_id=r[0], course_id=r[1], code=r[2], name_vi=r[2],
+                            name_en=None, category=r[3], weight=float(r[4]),
                         )
                         for r in cur.fetchall()
                     ]
@@ -1268,10 +1320,24 @@ class PostgresMetadataStore(IMetadataStore):
                         """
                         SELECT lo_id, course_id, code, parent_code, statement_vi,
                                statement_en, bloom_level, cdio_level
-                        FROM learning_outcomes
-                        WHERE course_id = %s AND (code LIKE %s OR code = %s);
+                        FROM (
+                            SELECT lo.lo_id::text AS lo_id,
+                                   ch.course_id::text AS course_id,
+                                   lo.code,
+                                   NULL AS parent_code,
+                                   lo.statement_vi,
+                                   lo.statement_en,
+                                   lo.bloom_level,
+                                   lo.cdio_level
+                            FROM learning_outcomes lo
+                            JOIN chapters ch ON ch.chapter_id = lo.chapter_id
+                            WHERE ch.course_id = %s::uuid
+                              AND lo.deleted_at IS NULL
+                              AND lo.is_current = TRUE
+                        ) q
+                        WHERE code LIKE %s OR code = %s;
                         """,
-                        (course_id, prefix + "%", f"L.O.{chapter_code}"),
+                        (_stable_uuid(course_id), prefix + "%", f"L.O.{chapter_code}"),
                     )
                     return Ok([
                         StoredLearningOutcome(
@@ -1291,14 +1357,15 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT lo.lo_id, lo.course_id, lo.code, lo.parent_code, lo.statement_vi,
-                               lo.statement_en, lo.bloom_level, lo.cdio_level
+                        SELECT lo.lo_id::text, ch.course_id::text, lo.code, NULL AS parent_code,
+                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level
                         FROM learning_outcomes lo
                         JOIN lo_assessments la ON la.lo_id = lo.lo_id
                         JOIN assessments a ON a.assessment_id = la.assessment_id
-                        WHERE lo.course_id = %s AND a.code = %s;
+                        JOIN chapters ch ON ch.chapter_id = lo.chapter_id
+                        WHERE ch.course_id = %s::uuid AND a.title = %s;
                         """,
-                        (course_id, assessment_code),
+                        (_stable_uuid(course_id), assessment_code),
                     )
                     return Ok([
                         StoredLearningOutcome(
@@ -1321,13 +1388,12 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
-                        INSERT INTO chunk_lo_mappings (chunk_id, lo_id, confidence, source)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO chunk_lo_mappings (chunk_id, lo_id, confidence)
+                        VALUES (%s::uuid, %s::uuid, %s)
                         ON CONFLICT (chunk_id, lo_id) DO UPDATE SET
-                            confidence = GREATEST(EXCLUDED.confidence, chunk_lo_mappings.confidence),
-                            source = EXCLUDED.source;
+                            confidence = GREATEST(EXCLUDED.confidence, chunk_lo_mappings.confidence);
                         """,
-                        [(m.chunk_id, m.lo_id, m.confidence, m.source) for m in mappings],
+                        [(m.chunk_id, m.lo_id, m.confidence) for m in mappings],
                     )
                 conn.commit()
             return Ok(None)
@@ -1342,14 +1408,14 @@ class PostgresMetadataStore(IMetadataStore):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT cm.chunk_id, cm.document_id, cm.chunk_index,
-                               cm.heading_path, cm.heading_level, cm.page_number,
-                               cm.content_length, cm.language,
-                               cc.content_text, cc.embedding_input
+                        SELECT c.chunk_id, c.document_id, c.sort_order,
+                               c.heading_path, 0 AS heading_level, c.page_number,
+                               length(c.content) AS content_length, c.language,
+                               c.content, NULL AS embedding_input
                         FROM chunk_lo_mappings clm
-                        JOIN chunks_metadata cm ON cm.chunk_id = clm.chunk_id
-                        LEFT JOIN chunk_contents cc ON cc.chunk_id = cm.chunk_id
-                        WHERE clm.lo_id = %s
+                        JOIN chunks c ON c.chunk_id = clm.chunk_id
+                        WHERE clm.lo_id = %s::uuid
+                          AND c.deleted_at IS NULL
                         ORDER BY clm.confidence DESC;
                         """,
                         (lo_id,),
@@ -1367,36 +1433,73 @@ class PostgresMetadataStore(IMetadataStore):
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def _row_to_document(self, row: tuple) -> Document:
+        doc_type = self._doc_type_from_mime_or_path(row[2], row[3])
         return Document(
             id=row[0],
             name=row[1],
             path=None,
-            doc_type=DocumentType(row[2]),
-            size_bytes=row[4],
-            mime_type=row[3],
-            created_at=row[5],
+            doc_type=doc_type,
+            size_bytes=0,
+            mime_type=row[2] or self._mime_for_doc_type(doc_type),
+            created_at=row[4],
         )
+
+    def _doc_type_from_mime_or_path(self, mime_type: str | None, path: str | None) -> DocumentType:
+        value = (mime_type or "").lower()
+        suffix = (path or "").lower().rsplit(".", 1)[-1]
+        if "pdf" in value or suffix == "pdf":
+            return DocumentType.PDF
+        if "word" in value or suffix == "docx":
+            return DocumentType.DOCX
+        if "presentation" in value or suffix == "pptx":
+            return DocumentType.PPTX
+        return DocumentType.MARKDOWN
+
+    def _mime_for_doc_type(self, doc_type: DocumentType) -> str:
+        return {
+            DocumentType.PDF: "application/pdf",
+            DocumentType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            DocumentType.PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            DocumentType.MARKDOWN: "text/markdown",
+        }[doc_type]
+
+    def _bloom_level(self, value: str | int | None) -> int:
+        if isinstance(value, int) and 1 <= value <= 6:
+            return value
+        mapping = {
+            "remember": 1,
+            "understand": 2,
+            "apply": 3,
+            "analyze": 4,
+            "evaluate": 5,
+            "create": 6,
+        }
+        return mapping.get(str(value or "").lower(), 2)
+
+    def _cdio_level(self, value: str | int | None) -> str:
+        if str(value) in {"I", "II", "III"}:
+            return str(value)
+        if value == 1:
+            return "I"
+        if value == 2:
+            return "II"
+        return "III"
+
+    def _chapter_code_from_lo(self, code: str) -> str:
+        parts = code.replace("L.O.", "").split(".")
+        return parts[0] if parts and parts[0] else "1"
 
     def _upsert_chunks_cursor(self, cur, chunks: "list[StoredChunkMetadata]") -> None:
         rows = [
             (
                 c.chunk_id,
                 c.document_id,
+                c.content_text or c.embedding_input or "",
                 c.chunk_index,
                 list(c.heading_path),
-                c.heading_level,
                 c.page_number,
-                c.content_length,
-                c.language,
-            )
-            for c in chunks
-        ]
-        content_rows = [
-            (
-                c.chunk_id,
                 c.document_id,
-                c.content_text or "",
-                c.embedding_input,
+                c.language if c.language in {"vi", "en", "mixed"} else "vi",
             )
             for c in chunks
         ]
@@ -1405,49 +1508,31 @@ class PostgresMetadataStore(IMetadataStore):
 
         cur.executemany(
             """
-            INSERT INTO chunks_metadata (
+            INSERT INTO chunks (
                 chunk_id,
                 document_id,
-                chunk_index,
+                course_id,
+                content,
                 heading_path,
-                heading_level,
                 page_number,
-                content_length,
-                language,
-                updated_at
+                sort_order,
+                language
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            SELECT %s::uuid, %s::uuid, d.course_id, %s, %s, %s, %s, %s
+            FROM documents d
+            WHERE d.document_id = %s::uuid
             ON CONFLICT (chunk_id)
             DO UPDATE SET
                 document_id = EXCLUDED.document_id,
-                chunk_index = EXCLUDED.chunk_index,
+                course_id = EXCLUDED.course_id,
+                content = EXCLUDED.content,
                 heading_path = EXCLUDED.heading_path,
-                heading_level = EXCLUDED.heading_level,
                 page_number = EXCLUDED.page_number,
-                content_length = EXCLUDED.content_length,
+                sort_order = EXCLUDED.sort_order,
                 language = EXCLUDED.language,
-                updated_at = NOW();
+                deleted_at = NULL;
             """,
             rows,
-        )
-        cur.executemany(
-            """
-            INSERT INTO chunk_contents (
-                chunk_id,
-                document_id,
-                content_text,
-                embedding_input,
-                updated_at
-            )
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (chunk_id)
-            DO UPDATE SET
-                document_id = EXCLUDED.document_id,
-                content_text = EXCLUDED.content_text,
-                embedding_input = EXCLUDED.embedding_input,
-                updated_at = NOW();
-            """,
-            content_rows,
         )
 
     def _upsert_concepts_cursor(self, cur, concepts: "list[StoredConcept]") -> None:
@@ -1533,8 +1618,9 @@ class PostgresMetadataStore(IMetadataStore):
             DELETE FROM chunk_concepts
             WHERE chunk_id IN (
                 SELECT chunk_id
-                FROM chunks_metadata
-                WHERE document_id = %s
+                FROM chunks
+                WHERE document_id = %s::uuid
+                  AND deleted_at IS NULL
             );
             """,
             (document_id,),
@@ -1548,7 +1634,17 @@ class PostgresMetadataStore(IMetadataStore):
         lesson_cards: "list[StoredLessonCard]",
     ) -> None:
         cur.execute(
-            "DELETE FROM lesson_cards WHERE document_id = %s;",
+            """
+            UPDATE lesson_cards
+            SET deleted_at = NOW()
+            WHERE EXISTS (
+                SELECT 1
+                FROM chunks c
+                WHERE c.document_id = %s::uuid
+                  AND c.chunk_id = ANY(lesson_cards.source_chunk_ids)
+            )
+              AND status IN ('GENERATED_DRAFT','REVIEWING','CHANGES_REQUESTED');
+            """,
             (document_id,),
         )
         if not lesson_cards:
@@ -1556,32 +1652,60 @@ class PostgresMetadataStore(IMetadataStore):
 
         cur.executemany(
             """
-            INSERT INTO lesson_cards (
-                id,
-                document_id,
-                primary_chunk_id,
-                source_chunk_ids,
-                heading_path,
-                title,
-                bullets,
-                key_insight,
-                card_index,
-                model_id
+            WITH chunk_context AS (
+                SELECT c.course_id, clm.lo_id, lo.statement_vi
+                FROM chunks c
+                JOIN chunk_lo_mappings clm ON clm.chunk_id = c.chunk_id
+                JOIN learning_outcomes lo ON lo.lo_id = clm.lo_id
+                WHERE c.chunk_id = %s::uuid
+                  AND c.deleted_at IS NULL
+                ORDER BY clm.confidence DESC
+                LIMIT 1
+            ),
+            lesson_row AS (
+                INSERT INTO lessons (course_id, lo_id, title, status)
+                SELECT course_id, lo_id, COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
+                FROM chunk_context
+                ON CONFLICT (course_id, lo_id) DO UPDATE SET updated_at = NOW()
+                RETURNING lesson_id, course_id, lo_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            INSERT INTO lesson_cards (
+                card_id,
+                lesson_id,
+                course_id,
+                lo_id,
+                title,
+                content,
+                source_chunk_ids,
+                status,
+                deleted_at
+            )
+            SELECT %s::uuid, lesson_id, course_id, lo_id, %s, %s::jsonb, %s::uuid[], 'GENERATED_DRAFT', NULL
+            FROM lesson_row
+            ON CONFLICT (card_id) DO UPDATE SET
+                lesson_id = EXCLUDED.lesson_id,
+                course_id = EXCLUDED.course_id,
+                lo_id = EXCLUDED.lo_id,
+                title = EXCLUDED.title,
+                content = EXCLUDED.content,
+                source_chunk_ids = EXCLUDED.source_chunk_ids,
+                status = 'GENERATED_DRAFT',
+                updated_at = NOW(),
+                deleted_at = NULL;
             """,
             [
                 (
-                    card.card_id,
-                    card.document_id,
                     card.primary_chunk_id,
-                    list(card.source_chunk_ids),
-                    list(card.heading_path),
+                    _stable_uuid(card.card_id),
                     card.title,
-                    list(card.bullets),
-                    card.key_insight,
-                    card.card_index,
-                    card.model_id,
+                    json.dumps({
+                        "key_insight": card.key_insight,
+                        "bullets": list(card.bullets),
+                        "heading_path": list(card.heading_path),
+                        "model_id": card.model_id,
+                        "card_index": card.card_index,
+                    }),
+                    [_stable_uuid(chunk_id) for chunk_id in (card.source_chunk_ids or (card.primary_chunk_id,))],
                 )
                 for card in lesson_cards
             ],
@@ -1594,7 +1718,17 @@ class PostgresMetadataStore(IMetadataStore):
         quiz_items: "list[StoredQuizItem]",
     ) -> None:
         cur.execute(
-            "DELETE FROM quiz_items WHERE document_id = %s;",
+            """
+            UPDATE quiz_items
+            SET deleted_at = NOW()
+            WHERE EXISTS (
+                SELECT 1
+                FROM chunks c
+                WHERE c.document_id = %s::uuid
+                  AND c.chunk_id = ANY(quiz_items.source_chunk_ids)
+            )
+              AND status IN ('GENERATED_DRAFT','REVIEWING','CHANGES_REQUESTED');
+            """,
             (document_id,),
         )
         if not quiz_items:
@@ -1602,36 +1736,66 @@ class PostgresMetadataStore(IMetadataStore):
 
         cur.executemany(
             """
-            INSERT INTO quiz_items (
-                id,
-                document_id,
-                primary_chunk_id,
-                source_chunk_ids,
-                heading_path,
-                question,
-                choices,
-                correct_index,
-                explanation,
-                difficulty,
-                question_index,
-                model_id
+            WITH chunk_context AS (
+                SELECT c.course_id, clm.lo_id, lo.statement_vi
+                FROM chunks c
+                JOIN chunk_lo_mappings clm ON clm.chunk_id = c.chunk_id
+                JOIN learning_outcomes lo ON lo.lo_id = clm.lo_id
+                WHERE c.chunk_id = %s::uuid
+                  AND c.deleted_at IS NULL
+                ORDER BY clm.confidence DESC
+                LIMIT 1
+            ),
+            lesson_row AS (
+                INSERT INTO lessons (course_id, lo_id, title, status)
+                SELECT course_id, lo_id, COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
+                FROM chunk_context
+                ON CONFLICT (course_id, lo_id) DO UPDATE SET updated_at = NOW()
+                RETURNING lesson_id, course_id, lo_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            INSERT INTO quiz_items (
+                quiz_id,
+                lesson_id,
+                course_id,
+                lo_id,
+                type,
+                question,
+                options,
+                correct_answer,
+                explanation,
+                source_chunk_ids,
+                status,
+                deleted_at
+            )
+            SELECT %s::uuid, lesson_id, course_id, lo_id, 'MCQ_SINGLE', %s, %s::jsonb, %s::jsonb,
+                   %s, %s::uuid[], 'GENERATED_DRAFT', NULL
+            FROM lesson_row
+            ON CONFLICT (quiz_id) DO UPDATE SET
+                lesson_id = EXCLUDED.lesson_id,
+                course_id = EXCLUDED.course_id,
+                lo_id = EXCLUDED.lo_id,
+                question = EXCLUDED.question,
+                options = EXCLUDED.options,
+                correct_answer = EXCLUDED.correct_answer,
+                explanation = EXCLUDED.explanation,
+                source_chunk_ids = EXCLUDED.source_chunk_ids,
+                status = 'GENERATED_DRAFT',
+                updated_at = NOW(),
+                deleted_at = NULL;
             """,
             [
                 (
-                    item.question_id,
-                    item.document_id,
                     item.primary_chunk_id,
-                    list(item.source_chunk_ids),
-                    list(item.heading_path),
+                    _stable_uuid(item.question_id),
                     item.question,
-                    list(item.choices),
-                    item.correct_index,
+                    json.dumps(list(item.choices)),
+                    json.dumps(
+                        item.choices[item.correct_index]
+                        if 0 <= item.correct_index < len(item.choices)
+                        else None
+                    ),
                     item.explanation,
-                    item.difficulty,
-                    item.question_index,
-                    item.model_id,
+                    [_stable_uuid(chunk_id) for chunk_id in (item.source_chunk_ids or (item.primary_chunk_id,))],
                 )
                 for item in quiz_items
             ],
@@ -1649,7 +1813,7 @@ class PostgresMetadataStore(IMetadataStore):
         cur.execute(
             """
             DELETE FROM outbox_events
-            WHERE aggregate_id = %s
+            WHERE aggregate_id = %s::uuid
               AND event_type = %s
               AND status = 'PENDING';
             """,
@@ -1667,16 +1831,16 @@ class PostgresMetadataStore(IMetadataStore):
         cur.execute(
             """
             INSERT INTO outbox_events (
-                id,
+                event_id,
                 event_type,
+                aggregate_type,
                 aggregate_id,
-                payload_json,
+                payload,
                 status,
-                attempts,
-                error_msg,
-                updated_at
+                retry_count,
+                last_error
             )
-            VALUES (%s, %s, %s, %s::jsonb, 'PENDING', 0, NULL, NOW());
+            VALUES (%s::uuid, %s, 'document', %s::uuid, %s::jsonb, 'PENDING', 0, NULL);
             """,
             (event_id, event_type, aggregate_id, json.dumps(payload)),
         )
