@@ -1,0 +1,304 @@
+syntax = "proto3";
+
+package chunking;
+
+// ---------------------------------------------------------------------------
+// ChunkingService — document processing + semantic search
+// ---------------------------------------------------------------------------
+
+service ChunkingService {
+  // Sync: nhận file bytes → parse → chunk → embed → lưu Qdrant + MinIO → trả kết quả ngay
+  rpc ProcessDocument(ProcessDocumentRequest) returns (ProcessDocumentResponse);
+
+  // Async: upload file → enqueue BullMQ job → trả về ngay với document_id
+  rpc EnqueueDocument(ProcessDocumentRequest) returns (EnqueueDocumentResponse);
+
+  // Poll trạng thái job async
+  rpc GetDocumentStatus(GetDocumentStatusRequest) returns (GetDocumentStatusResponse);
+
+  // Lấy lesson cards đã generate cho document
+  rpc GetCards(GetCardsRequest) returns (GetCardsResponse);
+
+  // Lấy quiz questions đã generate cho document
+  rpc GetQuiz(GetQuizRequest) returns (GetQuizResponse);
+
+  // Semantic search qua vector similarity
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Xóa toàn bộ chunks của một document
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+
+  // Health check — kiểm tra service còn sống không
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // ---------------------------------------------------------------------------
+  // Curriculum-Aware layer
+  // ---------------------------------------------------------------------------
+
+  // Parse DCMH → extract LO graph → persist
+  rpc IngestCurriculum(IngestCurriculumRequest) returns (IngestCurriculumResponse);
+
+  // Lấy curriculum đã ingest
+  rpc GetCurriculum(GetCurriculumRequest) returns (GetCurriculumResponse);
+
+  // Search chunks theo LO / chapter / assessment
+  rpc SearchByLearningOutcome(SearchByLearningOutcomeRequest) returns (SearchByLearningOutcomeResponse);
+
+  // Sinh quiz aligned theo LO
+  rpc GenerateCurriculumQuiz(GenerateCurriculumQuizRequest) returns (GetQuizResponse);
+}
+
+// ---------------------------------------------------------------------------
+// ProcessDocument
+// ---------------------------------------------------------------------------
+
+message ProcessDocumentRequest {
+  bytes  file_data    = 1;  // Nội dung file (raw bytes)
+  string file_name    = 2;  // Tên file (dùng để detect type: .pdf, .docx, ...)
+  string document_id  = 3;  // Optional — tự sinh UUID nếu để trống
+  string language     = 4;  // Optional — auto-detect nếu để trống
+  map<string, string> metadata = 5;  // Metadata tùy ý (key-value)
+}
+
+message ChunkSummary {
+  string chunk_id       = 1;
+  repeated string heading_path = 2;
+  string content_preview = 3;   // 200 ký tự đầu
+  int32  content_length  = 4;
+  int32  page_number     = 5;   // 0 = không có page
+  bool   has_images      = 6;
+}
+
+message ProcessDocumentResponse {
+  string document_id       = 1;
+  string document_name     = 2;
+  string doc_type          = 3;  // "pdf" | "docx" | "pptx" | "markdown"
+  int32  chunk_count       = 4;
+  repeated ChunkSummary chunks = 5;
+  string storage_key       = 6;  // MinIO object key của raw file
+  float  processing_time_ms = 7;
+}
+
+// ---------------------------------------------------------------------------
+// EnqueueDocument (async)
+// ---------------------------------------------------------------------------
+
+message EnqueueDocumentResponse {
+  string document_id = 1;
+  string status      = 2;  // "QUEUED"
+  string job_id      = 3;  // BullMQ job ID (== document_id)
+}
+
+message GetDocumentStatusRequest {
+  string document_id = 1;
+}
+
+message GetDocumentStatusResponse {
+  string document_id = 1;
+  string status      = 2;  // "QUEUED" | "PARSING" | "CHUNKING" | "EMBEDDING" | "INDEXED" | "ENRICHING" | "GENERATED_DRAFT" | "ERROR"
+  string error_msg   = 3;  // populated khi status == "ERROR"
+  string storage_key = 4;  // MinIO key, populated sau khi file được upload
+}
+
+message GetCardsRequest {
+  string document_id = 1;
+}
+
+message LessonCard {
+  string card_id = 1;
+  string chunk_id = 2;
+  repeated string heading_path = 3;
+  string title = 4;
+  repeated string bullets = 5;
+  string key_insight = 6;
+  int32 card_index = 7;
+}
+
+message CardGroup {
+  repeated string heading_path = 1;
+  repeated LessonCard cards = 2;
+}
+
+message GetCardsResponse {
+  string document_id = 1;
+  repeated CardGroup sections = 2;
+  int32 total_cards = 3;
+}
+
+message GetQuizRequest {
+  string document_id = 1;
+}
+
+message QuizItem {
+  string question_id = 1;
+  string chunk_id = 2;
+  string question = 3;
+  repeated string choices = 4;
+  int32 correct_index = 5;
+  string explanation = 6;
+  string difficulty = 7;
+  // Curriculum-Aware extensions (backward-compatible)
+  string lo_id = 8;
+  string bloom_level = 9;
+  string lo_alignment_rationale = 10;
+}
+
+message GetQuizResponse {
+  string document_id = 1;
+  repeated QuizItem questions = 2;
+  int32 total_questions = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+message SearchRequest {
+  string query           = 1;
+  int32  top_k           = 2;  // default 10, max 100
+  float  score_threshold = 3;  // 0.0–1.0, default 0.0
+
+  // Filters — tất cả optional, để trống = không lọc
+  repeated string doc_types    = 4;  // "pdf", "docx", ...
+  repeated string document_ids = 5;
+  string language              = 6;
+  string course_id             = 7;
+  string owner_id              = 8;
+}
+
+message SearchResultItem {
+  string chunk_id       = 1;
+  string document_id    = 2;
+  string document_name  = 3;
+  string doc_type       = 4;
+  repeated string heading_path = 5;
+  string content        = 6;
+  float  score          = 7;
+  int32  rank           = 8;
+  int32  page_number    = 9;
+}
+
+message SearchResponse {
+  string query       = 1;
+  repeated SearchResultItem results = 2;
+  int32  total_found = 3;
+  float  search_time_ms = 4;
+}
+
+// ---------------------------------------------------------------------------
+// DeleteDocument
+// ---------------------------------------------------------------------------
+
+message DeleteDocumentRequest {
+  string document_id = 1;
+}
+
+message DeleteDocumentResponse {
+  bool   success = 1;
+  string message = 2;  // Human-readable status
+}
+
+// ---------------------------------------------------------------------------
+// HealthCheck
+// ---------------------------------------------------------------------------
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status  = 1;  // "ok" | "degraded"
+  string version = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Curriculum-Aware messages
+// ---------------------------------------------------------------------------
+
+message IngestCurriculumRequest {
+  bytes  file_data  = 1;
+  string file_name  = 2;
+  string course_id  = 3;
+}
+
+message IngestCurriculumResponse {
+  string course_id            = 1;
+  string course_code          = 2;
+  string title_vi             = 3;
+  int32  chapter_count        = 4;
+  int32  lo_count             = 5;
+  int32  assessment_count     = 6;
+  float  extraction_confidence = 7;
+  repeated string warnings    = 8;
+}
+
+message LearningOutcomeMsg {
+  string lo_id        = 1;
+  string code         = 2;
+  string parent_code  = 3;
+  string statement_vi = 4;
+  string statement_en = 5;
+  string bloom_level  = 6;
+  int32  cdio_level   = 7;
+}
+
+message ChapterMsg {
+  string chapter_id  = 1;
+  string code        = 2;
+  string title       = 3;
+  int32  order_index = 4;
+}
+
+message AssessmentMsg {
+  string assessment_id = 1;
+  string code          = 2;
+  string name_vi       = 3;
+  string category      = 4;
+  float  weight        = 5;
+}
+
+message GetCurriculumRequest {
+  string course_id = 1;
+}
+
+message GetCurriculumResponse {
+  string course_id                        = 1;
+  string code                             = 2;
+  string title_vi                         = 3;
+  repeated ChapterMsg chapters            = 4;
+  repeated LearningOutcomeMsg learning_outcomes = 5;
+  repeated AssessmentMsg assessments      = 6;
+}
+
+message SearchByLearningOutcomeRequest {
+  string course_id        = 1;
+  string lo_code          = 2;
+  string chapter_code     = 3;
+  string assessment_code  = 4;
+  string query            = 5;
+  int32  top_k            = 6;
+}
+
+message LOSearchResultItem {
+  string chunk_id                  = 1;
+  string document_id               = 2;
+  repeated string heading_path     = 3;
+  string content_text              = 4;
+  int32  page_number               = 5;
+  repeated string lo_ids           = 6;
+  int32  rank                      = 7;
+}
+
+message SearchByLearningOutcomeResponse {
+  string course_id                         = 1;
+  repeated string lo_ids_searched          = 2;
+  repeated LOSearchResultItem results      = 3;
+  int32  total_found                       = 4;
+}
+
+message GenerateCurriculumQuizRequest {
+  string course_id    = 1;
+  string target_kind  = 2;  // "lo" | "chapter" | "assessment"
+  string target_code  = 3;
+  string style        = 4;  // "quiz" | "midterm" | "final"
+  string bloom_level  = 5;
+  int32  count        = 6;
+}

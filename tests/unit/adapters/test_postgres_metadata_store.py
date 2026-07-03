@@ -1,0 +1,179 @@
+from contextlib import contextmanager
+
+from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+from document_chunk.domain.ports.metadata_store import (
+    StoredChunkMetadata,
+    StoredLessonCard,
+    StoredQuizItem,
+)
+from document_chunk.infrastructure.config import OutboxConfig, SqlConfig
+
+
+class _FakeCursor:
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[str, tuple]] = []
+        self.executemany_calls: list[tuple[str, list[tuple]]] = []
+        self.fetchone_result = None
+        self.fetchall_result = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def execute(self, query: str, params: tuple) -> None:
+        self.execute_calls.append((query, params))
+
+    def executemany(self, query: str, rows: list[tuple]) -> None:
+        self.executemany_calls.append((query, rows))
+
+    def fetchone(self):
+        return self.fetchone_result
+
+    def fetchall(self):
+        return self.fetchall_result
+
+
+class _FakeConnection:
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+        self.commit_calls = 0
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+
+
+class TestPostgresMetadataStore:
+    def test_upsert_chunks_with_outbox_uses_one_commit(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        cursor = _FakeCursor()
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.upsert_chunks_with_outbox(
+            chunks=[
+                StoredChunkMetadata(
+                    chunk_id="chunk-001",
+                    document_id="doc-001",
+                    chunk_index=0,
+                    heading_path=("Introduction",),
+                    heading_level=1,
+                    page_number=1,
+                    content_length=42,
+                    language="en",
+                )
+            ],
+            event_type="heading_graph_project",
+            aggregate_id="doc-001",
+            payload={"document_id": "doc-001"},
+        )
+
+        assert result.is_ok()
+        assert connection.commit_calls == 1
+        assert len(cursor.executemany_calls) == 2
+        assert "INSERT INTO chunks_metadata" in cursor.executemany_calls[0][0]
+        assert "INSERT INTO chunk_contents" in cursor.executemany_calls[1][0]
+        assert len(cursor.execute_calls) == 1
+        assert "INSERT INTO outbox_events" in cursor.execute_calls[0][0]
+
+    def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        cursor = _FakeCursor()
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.persist_enrichment_batch(
+            document_id="doc-001",
+            lesson_cards=[
+                StoredLessonCard(
+                    card_id="card-001",
+                    document_id="doc-001",
+                    primary_chunk_id="chunk-001",
+                    source_chunk_ids=("chunk-001", "chunk-002"),
+                    heading_path=("Chapter 1", "Matrices"),
+                    title="Matrices",
+                    bullets=("Rectangular arrays",),
+                    key_insight="Matrices encode linear structure.",
+                    card_index=0,
+                    model_id="gemini-test",
+                )
+            ],
+            quiz_items=[
+                StoredQuizItem(
+                    question_id="quiz-001",
+                    document_id="doc-001",
+                    primary_chunk_id="chunk-001",
+                    source_chunk_ids=("chunk-001", "chunk-002"),
+                    heading_path=("Chapter 1", "Matrices"),
+                    question="What is a matrix?",
+                    choices=("A set", "A rectangular array", "A scalar", "A graph"),
+                    correct_index=1,
+                    explanation="That is the standard definition.",
+                    difficulty="easy",
+                    question_index=0,
+                    model_id="gemini-test",
+                )
+            ],
+            concepts=[],
+            chunk_concepts=[],
+            outbox_event_type="concept_graph_project",
+            outbox_payload={"document_id": "doc-001"},
+        )
+
+        assert result.is_ok()
+        assert connection.commit_calls == 1
+        execute_sql = "\n".join(query for query, _ in cursor.execute_calls)
+        executemany_sql = "\n".join(query for query, _ in cursor.executemany_calls)
+        assert "DELETE FROM lesson_cards WHERE document_id = %s" in execute_sql
+        assert "DELETE FROM quiz_items WHERE document_id = %s" in execute_sql
+        assert "DELETE FROM chunk_concepts" in execute_sql
+        assert "DELETE FROM outbox_events" in execute_sql
+        assert executemany_sql.count("INSERT INTO lesson_cards") == 1
+        assert executemany_sql.count("INSERT INTO quiz_items") == 1
+
+    def test_list_chunks_joins_chunk_contents(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        cursor = _FakeCursor()
+        cursor.fetchall_result = [
+            (
+                "chunk-001",
+                "doc-001",
+                0,
+                ["Introduction"],
+                1,
+                1,
+                42,
+                "en",
+                "Chunk content",
+                "Introduction\n\nChunk content",
+            )
+        ]
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.list_chunks("doc-001")
+
+        assert result.is_ok()
+        chunk = result.unwrap()[0]
+        assert chunk.content_text == "Chunk content"
+        assert chunk.embedding_input == "Introduction\n\nChunk content"
+        assert "LEFT JOIN chunk_contents" in cursor.execute_calls[0][0]

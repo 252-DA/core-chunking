@@ -62,13 +62,13 @@ Yêu cầu [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone <repo-url>
-cd chunking_v2
+cd packages-ai
 
 # Install dependencies (tự tạo .venv)
 uv sync
 
 # Run
-uv run python -m src.delivery.grpc.server
+uv run python -m document_chunk.delivery.grpc.server
 ```
 
 ## Observability

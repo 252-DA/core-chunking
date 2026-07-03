@@ -1,0 +1,345 @@
+"""
+Dependency Injection Container.
+
+Wire tất cả dependencies lại với nhau — adapters → use cases.
+Mỗi component là lazy singleton (tạo khi lần đầu được gọi).
+
+Usage:
+    from document_chunk.infrastructure.container import get_container
+
+    container = get_container()
+    use_case = container.process_document_use_case
+"""
+from functools import cached_property, lru_cache
+
+from document_chunk.domain.ports.chunker import IChunker
+from document_chunk.domain.ports.embedder import IEmbedder
+from document_chunk.domain.ports.file_storage import IFileStorage
+from document_chunk.domain.ports.graph_store import IGraphStore
+from document_chunk.domain.ports.llm_client import ILLMClient
+from document_chunk.domain.ports.metadata_store import IMetadataStore
+from document_chunk.domain.ports.parser import IParser
+from document_chunk.domain.ports.vector_store import IVectorStore
+from document_chunk.infrastructure.config import Settings, get_settings
+from document_chunk.shared.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class Container:
+    """
+    Manual DI container — không dùng framework, đủ đơn giản để hiểu.
+
+    Mỗi property là lazy singleton:
+      - Chỉ khởi tạo khi lần đầu được access
+      - Giữ nguyên instance cho các lần sau (cached_property)
+
+    Khi adapters chưa implement → raise NotImplementedError rõ ràng
+    thay vì crash lúc import.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def close(self) -> None:
+        for component_name in ("graph_store", "metadata_store", "llm_client"):
+            component = self.__dict__.get(component_name)
+            close = getattr(component, "close", None)
+            if not callable(close):
+                continue
+
+            try:
+                close()
+            except Exception as exc:
+                logger.warning(
+                    "container.close_failed",
+                    component=component_name,
+                    error=str(exc),
+                )
+
+    # ------------------------------------------------------------------
+    # Parsers
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def pdf_parser(self) -> IParser:
+        from document_chunk.adapters.parsers.docling_pdf_parser import DoclingPdfParser
+        logger.debug("container.init", component="DoclingPdfParser")
+        return DoclingPdfParser(self._settings.parser)
+
+    @cached_property
+    def docx_parser(self) -> IParser:
+        from document_chunk.adapters.parsers.docx_parser import DocxParser
+        logger.debug("container.init", component="DocxParser")
+        return DocxParser(self._settings.parser)
+
+    @cached_property
+    def pptx_parser(self) -> IParser:
+        from document_chunk.adapters.parsers.pptx_parser import PptxParser
+        logger.debug("container.init", component="PptxParser")
+        return PptxParser(self._settings.parser)
+
+    @cached_property
+    def markdown_parser(self) -> IParser:
+        from document_chunk.adapters.parsers.markdown_parser import MarkdownParser
+        logger.debug("container.init", component="MarkdownParser")
+        return MarkdownParser(self._settings.parser)
+
+    @cached_property
+    def parsers(self) -> list[IParser]:
+        """Tất cả parsers — dùng để resolve parser theo doc_type."""
+        return [
+            self.pdf_parser,
+            self.docx_parser,
+            self.pptx_parser,
+            self.markdown_parser,
+        ]
+
+    # ------------------------------------------------------------------
+    # Chunker
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def chunker(self) -> IChunker:
+        from document_chunk.adapters.chunkers.heading_chunker import HeadingChunker
+        logger.debug("container.init", component="HeadingChunker")
+        return HeadingChunker(self._settings.chunker)
+
+    # ------------------------------------------------------------------
+    # Embedder
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def embedder(self) -> IEmbedder:
+        provider = self._settings.embedder.provider
+        logger.debug("container.init", component="Embedder", provider=provider)
+
+        if provider == "bge":
+            from document_chunk.adapters.embedders.bge_embedder import BgeEmbedder
+            return BgeEmbedder(self._settings.embedder)
+
+        if provider == "openai":
+            from document_chunk.adapters.embedders.openai_embedder import OpenAIEmbedder
+            return OpenAIEmbedder(self._settings.embedder)
+
+        raise ValueError(f"Unknown embedder provider: {provider}")
+
+    # ------------------------------------------------------------------
+    # Vector Store
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def vector_store(self) -> IVectorStore:
+        from document_chunk.adapters.vector_db.qdrant_adapter import QdrantAdapter
+        logger.debug("container.init", component="QdrantAdapter")
+        return QdrantAdapter(self._settings.qdrant)
+
+    # ------------------------------------------------------------------
+    # LLM Client
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def llm_client(self) -> ILLMClient:
+        provider = self._settings.llm.provider
+        logger.debug("container.init", component="LLMClient", provider=provider)
+
+        if provider == "gemini":
+            from document_chunk.adapters.llm.gemini_llm_client import GeminiLLMClient
+
+            return GeminiLLMClient(self._settings.llm)
+
+        raise ValueError(f"Unknown LLM provider: {provider}")
+
+    # ------------------------------------------------------------------
+    # Metadata Store (PostgreSQL)
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def metadata_store(self) -> IMetadataStore:
+        if not self._settings.sql.enabled:
+            from document_chunk.adapters.metadata.noop_metadata_store import NoopMetadataStore
+            logger.warning("container.init", component="NoopMetadataStore", reason="sql.disabled")
+            return NoopMetadataStore()
+
+        from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+
+        logger.debug("container.init", component="PostgresMetadataStore")
+        return PostgresMetadataStore(self._settings.sql, self._settings.outbox)
+
+    # ------------------------------------------------------------------
+    # Graph Store (Neo4j)
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def graph_store(self) -> IGraphStore:
+        if not self._settings.neo4j.enabled:
+            from document_chunk.adapters.graph.noop_graph_store import NoopGraphStore
+            logger.warning("container.init", component="NoopGraphStore", reason="neo4j.disabled")
+            return NoopGraphStore()
+
+        from document_chunk.adapters.graph.neo4j_graph_store import Neo4jGraphStore
+
+        logger.debug("container.init", component="Neo4jGraphStore")
+        return Neo4jGraphStore(self._settings.neo4j)
+
+    # ------------------------------------------------------------------
+    # File Storage
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def file_storage(self) -> IFileStorage:
+        from document_chunk.adapters.storage.minio_adapter import MinioAdapter
+        logger.debug("container.init", component="MinioAdapter")
+        return MinioAdapter(self._settings.minio)
+
+    # ------------------------------------------------------------------
+    # Use Cases
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def process_document_use_case(self):
+        from document_chunk.application.use_cases.process_document import ProcessDocumentUseCase
+        logger.debug("container.init", component="ProcessDocumentUseCase")
+        return ProcessDocumentUseCase(
+            parsers=self.parsers,
+            chunker=self.chunker,
+            embedder=self.embedder,
+            vector_store=self.vector_store,
+            file_storage=self.file_storage,
+            metadata_store=self.metadata_store,
+            job_queue=self.job_queue,
+        )
+
+    @cached_property
+    def search_chunks_use_case(self):
+        from document_chunk.application.use_cases.search_chunks import SearchChunksUseCase
+        logger.debug("container.init", component="SearchChunksUseCase")
+        return SearchChunksUseCase(
+            embedder=self.embedder,
+            vector_store=self.vector_store,
+        )
+
+    @cached_property
+    def delete_document_use_case(self):
+        from document_chunk.application.use_cases.delete_document import DeleteDocumentUseCase
+
+        logger.debug("container.init", component="DeleteDocumentUseCase")
+        return DeleteDocumentUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_document_status_use_case(self):
+        from document_chunk.application.use_cases.get_document_status import GetDocumentStatusUseCase
+
+        logger.debug("container.init", component="GetDocumentStatusUseCase")
+        return GetDocumentStatusUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_cards_use_case(self):
+        from document_chunk.application.use_cases.get_cards import GetCardsUseCase
+
+        logger.debug("container.init", component="GetCardsUseCase")
+        return GetCardsUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def get_quiz_use_case(self):
+        from document_chunk.application.use_cases.get_quiz import GetQuizUseCase
+
+        logger.debug("container.init", component="GetQuizUseCase")
+        return GetQuizUseCase(
+            metadata_store=self.metadata_store,
+        )
+
+    @cached_property
+    def job_queue(self):
+        from document_chunk.adapters.queue.bullmq_adapter import BullMQAdapter
+        logger.debug("container.init", component="BullMQAdapter")
+        return BullMQAdapter(self._settings.redis)
+
+    @cached_property
+    def enqueue_document_use_case(self):
+        from document_chunk.application.use_cases.enqueue_document import EnqueueDocumentUseCase
+        logger.debug("container.init", component="EnqueueDocumentUseCase")
+        return EnqueueDocumentUseCase(
+            file_storage=self.file_storage,
+            metadata_store=self.metadata_store,
+            job_queue=self.job_queue,
+        )
+
+    # ------------------------------------------------------------------
+    # Curriculum-Aware use cases
+    # ------------------------------------------------------------------
+
+    @cached_property
+    def curriculum_extractor(self):
+        from document_chunk.adapters.curriculum.dcmh_extractor import DcmhExtractor
+        logger.debug("container.init", component="DcmhExtractor")
+        return DcmhExtractor()
+
+    @cached_property
+    def lo_mapper(self):
+        from document_chunk.adapters.curriculum.heuristic_lo_mapper import HeuristicLoMapper
+        logger.debug("container.init", component="HeuristicLoMapper")
+        return HeuristicLoMapper()
+
+    @cached_property
+    def ingest_curriculum_use_case(self):
+        from document_chunk.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
+        logger.debug("container.init", component="IngestCurriculumUseCase")
+        return IngestCurriculumUseCase(
+            parsers=self.parsers,
+            curriculum_extractor=self.curriculum_extractor,
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+        )
+
+    @cached_property
+    def map_chunks_to_los_use_case(self):
+        from document_chunk.application.use_cases.map_chunks_to_los import MapChunksToLosUseCase
+        logger.debug("container.init", component="MapChunksToLosUseCase")
+        return MapChunksToLosUseCase(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            lo_mapper=self.lo_mapper,
+        )
+
+    @cached_property
+    def search_by_lo_use_case(self):
+        from document_chunk.application.use_cases.search_by_learning_outcome import SearchByLearningOutcomeUseCase
+        logger.debug("container.init", component="SearchByLearningOutcomeUseCase")
+        return SearchByLearningOutcomeUseCase(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+        )
+
+    @cached_property
+    def generate_curriculum_quiz_use_case(self):
+        try:
+            from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizUseCase
+        except ModuleNotFoundError:
+            logger.warning("container.init", component="GenerateCurriculumQuizUseCase", reason="worker.unavailable")
+            return None
+        logger.debug("container.init", component="GenerateCurriculumQuizUseCase")
+        return GenerateCurriculumQuizUseCase(
+            metadata_store=self.metadata_store,
+            llm_client=self.llm_client,
+        )
+
+
+@lru_cache
+def get_container() -> Container:
+    """
+    Singleton container — tạo một lần, dùng mãi.
+
+    Usage:
+        container = get_container()
+        result = container.process_document_use_case.execute(request)
+    """
+    settings = get_settings()
+    logger.info("container.created", env=settings.app.env)
+    return Container(settings)
