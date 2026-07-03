@@ -1,6 +1,6 @@
-from src.application.dto.document_dto import ProcessDocumentRequest
-from src.application.use_cases.process_document import ProcessDocumentUseCase
-from src.shared.result import Err
+from document_chunk.application.dto.document_dto import ProcessDocumentRequest
+from document_chunk.application.use_cases.process_document import ProcessDocumentUseCase
+from document_chunk.shared.result import Err
 
 
 class TestProcessDocumentUseCase:

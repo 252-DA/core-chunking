@@ -70,3 +70,7 @@ temp/
 
 # Marker output
 marker_output/
+
+# Editor / agent
+.claude/
+.codex

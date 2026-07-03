@@ -1,8 +1,8 @@
-from src.application.use_cases.delete_document import (
+from document_chunk.application.use_cases.delete_document import (
     DeleteDocumentRequest,
     DeleteDocumentUseCase,
 )
-from src.shared.result import Err
+from document_chunk.shared.result import Err
 
 
 class TestDeleteDocumentUseCase:

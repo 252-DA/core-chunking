@@ -6,13 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.domain.entities.chunk import Chunk, ChunkMetadata
-from src.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
-from src.domain.entities.embedding import Embedding
-from src.domain.entities.search import SearchResult
-from src.domain.ports.metadata_store import StoredChunkMetadata, StoredDocumentContext
-from src.infrastructure.config import ChunkerConfig, QdrantConfig
-from src.shared.result import Ok
+from document_chunk.domain.entities.chunk import Chunk, ChunkMetadata
+from document_chunk.domain.entities.document import Document, DocumentType, ElementType, ParsedDocument, Section
+from document_chunk.domain.entities.embedding import Embedding
+from document_chunk.domain.entities.search import SearchResult
+from document_chunk.domain.ports.metadata_store import StoredChunkMetadata, StoredDocumentContext
+from document_chunk.infrastructure.config import ChunkerConfig, QdrantConfig
+from document_chunk.shared.result import Ok
 
 # ---------------------------------------------------------------------------
 # Domain entities
@@ -85,17 +85,18 @@ def sample_chunk(sample_document: Document) -> Chunk:
     return Chunk(
         id="chunk-001",
         content="This is chunk content for testing purposes.",
+        embedding_input="Introduction\n\nThis is chunk content for testing purposes.",
+        content_hash="fake-hash-001",
         metadata=ChunkMetadata(
             document_id=sample_document.id,
             document_name=sample_document.name,
-            doc_type=DocumentType.PDF,
+            document_type=DocumentType.PDF,
             chunk_index=0,
             heading_path=("Introduction",),
             heading_level=1,
             page_number=1,
             language="en",
         ),
-        enriched_content="Introduction\n\nThis is chunk content for testing purposes.",
     )
 
 
@@ -125,6 +126,8 @@ def sample_stored_chunk_metadata(sample_chunk: Chunk) -> StoredChunkMetadata:
         page_number=sample_chunk.metadata.page_number,
         content_length=len(sample_chunk.content),
         language=sample_chunk.metadata.language,
+        content_text=sample_chunk.content,
+        embedding_input=sample_chunk.embedding_input,
     )
 
 
@@ -221,6 +224,9 @@ def mock_metadata_store(
     store.list_chunks.return_value = Ok([sample_stored_chunk_metadata])
     store.upsert_concepts.return_value = Ok(None)
     store.upsert_chunk_concepts.return_value = Ok(None)
+    store.persist_enrichment_batch.return_value = Ok("event-001")
+    store.list_lesson_cards.return_value = Ok([])
+    store.list_quiz_items.return_value = Ok([])
     store.append_outbox_event.return_value = Ok("event-001")
     store.fetch_pending_outbox.return_value = Ok([])
     store.mark_outbox_done.return_value = Ok(None)

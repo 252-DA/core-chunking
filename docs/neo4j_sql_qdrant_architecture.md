@@ -2,33 +2,33 @@
 
 ## 1. Mục tiêu
 
-Hệ thống **Adaptive Micro-learning Platform** — nền tảng học tập vi mô thích ứng dựa trên đồ thị tri thức và AI.
+Hệ thống **Micro-Content & Quiz Generation Platform** — nền tảng tự động tạo micro-content và quiz từ tài liệu học thuật, dựa trên đồ thị tri thức và LLM.
 
-Mục tiêu cốt lõi: **"Kiến thức A là tiền đề của kiến thức B. Nếu hổng A, phải học lại A rồi mới học B."**
+Mục tiêu cốt lõi: **"Từ tài liệu thô (PDF/DOCX/PPTX) → tự động sinh micro-content chunks + quiz câu hỏi ôn tập, gắn với concept graph."**
 
 Tài liệu này mô tả cách kết hợp 3 hệ thống lưu trữ để phục vụ toàn bộ pipeline:
 
 ```
-Upload PDF/Video → Parse → Chunk → Embed → Store
-                                      ↓
-                              Concept Extraction → Knowledge Graph
-                                      ↓
-                              Quiz Generation → Adaptive Learning Path
-                                      ↓
-                              RAG Chatbot (Qdrant + Neo4j context)
+Upload PDF/DOCX/PPTX → Parse → Chunk → Embed → Store
+                                          ↓
+                                  Concept Extraction → Knowledge Graph
+                                          ↓
+                                  Quiz Generation (LLM) → Store
+                                          ↓
+                                  RAG Chatbot (Qdrant + Neo4j context)
 ```
 
-- **PostgreSQL**: source of truth — metadata, trạng thái pipeline, concepts, quiz, user progress, outbox events.
+- **PostgreSQL**: source of truth — metadata, trạng thái pipeline, concepts, quizzes, outbox events.
 - **Qdrant**: vector retrieval — semantic search top-K cho RAG chatbot và content discovery.
-- **Neo4j**: knowledge graph — concept hierarchy, prerequisite paths, heading structure, adaptive traversal.
+- **Neo4j**: knowledge graph — concept hierarchy, heading structure, prerequisite graph (manual).
 
 ## 2. Phân công vai trò
 
 | Thành phần | Vai trò chính | Không nên dùng cho |
 |---|---|---|
-| PostgreSQL | Source of truth cho `documents`, `chunks`, `concepts`, `quizzes`, `user_concept_progress`, ACL, status pipeline, outbox | Vector ANN, graph traversal |
+| PostgreSQL | Source of truth cho `documents`, `chunks`, `concepts`, `quizzes`, ACL, status pipeline, outbox | Vector ANN, graph traversal |
 | Qdrant | Tìm chunk liên quan theo embedding, score cosine — phục vụ RAG chatbot | Transaction business, join phức tạp |
-| Neo4j | Truy vấn quan hệ: concept graph, **prerequisite path**, heading hierarchy, adaptive learning traversal | Source of truth giao dịch |
+| Neo4j | Truy vấn quan hệ: concept graph, heading hierarchy, prerequisite graph (manual) | Source of truth giao dịch |
 
 ## 3. Data Ownership (quan trọng)
 
@@ -103,7 +103,7 @@ Hai repo riêng, worker repo depend on core package:
 
 | Component | Repo | Entry point | Container |
 |---|---|---|---|
-| gRPC API | `chunking_v2` | `python -m src.delivery.grpc.server` | — |
+| gRPC API | `packages-ai` | `python -m document_chunk.delivery.grpc.server` | — |
 | Document Worker | `DA/worker` | `document-worker` | `DocumentWorkerContainer` |
 | Enrichment Worker | `DA/worker` | `enrichment-worker` | `EnrichmentWorkerContainer` |
 | Outbox Worker | `DA/worker` | `outbox-worker` | `OutboxWorkerContainer` |
@@ -126,7 +126,7 @@ QUEUED → PARSING → CHUNKING → EMBEDDING → UPSERTING → DONE → ENRICHI
 
 - `DONE` = đã search được (Qdrant có vectors). Heading graph đang được project async bởi Outbox Worker.
 - `ENRICHING` = đang extract concepts (optional, không block search)
-- `ENRICHED` = đã có concept graph (search quality tốt hơn, quiz generation sẵn sàng)
+- `ENRICHED` = đã có concept graph (search quality tốt hơn)
 - Nếu enrichment fail: status **quay về `DONE`** (không về `ERROR`) — user vẫn search được, enrichment retry later.
 
 ## 6. Schema
@@ -193,7 +193,7 @@ chunk_concepts(chunk_id FK, concept_id FK,
                created_at)
 ```
 
-**Planned (Phase C — prerequisite + quiz + adaptive learning):**
+**Planned (Quiz Generation + Prerequisite Graph):**
 
 ```sql
 concept_prerequisites(
@@ -223,35 +223,9 @@ quizzes(
 );
 
 CREATE INDEX idx_quizzes_concept_id ON quizzes(concept_id);
-
-quiz_attempts(
-    id UUID PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    quiz_id UUID NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
-    selected_index INT NOT NULL,
-    is_correct BOOLEAN NOT NULL,
-    answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_quiz_attempts_user ON quiz_attempts(user_id, answered_at);
-
-user_concept_progress(
-    user_id TEXT NOT NULL,
-    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'not_started',
-    -- status: "not_started" | "in_progress" | "weak" | "mastered"
-    score FLOAT NOT NULL DEFAULT 0.0,          -- 0.0 → 1.0
-    total_attempts INT NOT NULL DEFAULT 0,
-    correct_attempts INT NOT NULL DEFAULT 0,
-    last_attempt_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, concept_id)
-);
-
--- Rule: score = correct_attempts / total_attempts
--- "weak"     = score < 0.5 AND total_attempts >= 3
--- "mastered" = score >= 0.8 AND total_attempts >= 3
 ```
+
+> **Deferred to Phase 2 (Adaptive Learning / Tutor Chat):** `quiz_attempts`, `user_concept_progress`, mastery tracking (EWMA/BKT), `:Learner` node, `:MASTERS`/`:ACHIEVES` edges. Không động đến trong v1.
 
 ### 6.2 Qdrant payload
 
@@ -302,7 +276,7 @@ Indexed payload fields: `document_id`, `course_id`, `owner_id`, `doc_type`, `lan
 -- Đã implement (concept graph — Phase B):
 (Chunk)-[:MENTIONS {confidence, source}]->(Concept)
 
--- Planned (prerequisite + adaptive learning — Phase C):
+-- Planned (prerequisite + co-occurrence):
 (Concept)-[:PREREQUISITE_OF {source, created_by}]->(Concept)
 -- source: "manual" | "auto"
 -- Đọc: "A PREREQUISITE_OF B" = "phải nắm A trước khi học B"
@@ -314,9 +288,9 @@ Indexed payload fields: `document_id`, `course_id`, `owner_id`, `doc_type`, `lan
 Tất cả writes dùng `MERGE` để đảm bảo idempotent — safe to retry.
 
 **Lưu ý thiết kế:**
-- `PREREQUISITE_OF` Phase C ban đầu là **manual** (giảng viên define). Phase sau có thể auto-suggest dựa trên document order + co-occurrence, nhưng luôn cần giảng viên confirm.
+- `PREREQUISITE_OF` ban đầu là **manual** (giảng viên define). Auto-suggest dựa trên document order + co-occurrence là optional.
 - Bỏ `SAME_AS` → merge luôn vào 1 node khi canonicalize (đơn giản hơn, tránh transitive closure problem).
-- **Cycle detection**: khi thêm prerequisite edge, phải check cycle trước — `(A)-[:PREREQUISITE_OF*]->(B)` rồi thêm `(B)-[:PREREQUISITE_OF]->(A)` sẽ tạo deadlock learning path.
+- **Cycle detection**: khi thêm prerequisite edge, phải check cycle trước.
 
 ## 7. Concept Extraction Strategy
 
@@ -351,87 +325,7 @@ Output: structured JSON (JSON mode). LLM tự normalize "đạo hàm" → "deriv
 
 **RELATED_TO**: 2 concepts xuất hiện trong cùng chunk hoặc cùng heading section → tạo edge, weight = co-occurrence count.
 
-## 8. Prerequisite Engine & Adaptive Learning (planned)
-
-### 8.1 Prerequisite Management
-
-**Thêm prerequisite** (giảng viên hoặc auto-suggest):
-
-```cypher
--- Cycle check trước khi thêm:
-OPTIONAL MATCH path = (target:Concept {id: $prerequisite_id})<-[:PREREQUISITE_OF*1..10]-(source:Concept {id: $concept_id})
-WITH path
-WHERE path IS NOT NULL
-RETURN count(path) > 0 AS would_create_cycle
-```
-
-Nếu `would_create_cycle = false`:
-
-```cypher
-MATCH (a:Concept {id: $prerequisite_id})
-MATCH (b:Concept {id: $concept_id})
-MERGE (a)-[:PREREQUISITE_OF {source: $source, created_by: $user_id}]->(b)
-```
-
-### 8.2 Prerequisite Traversal — "Học lại gì khi hổng concept X?"
-
-Khi user fail quiz cho concept X (score < 0.5):
-
-```cypher
--- Tìm tất cả prerequisite cần học lại (BFS ngược):
-MATCH path = (prereq:Concept)-[:PREREQUISITE_OF*1..5]->(target:Concept {id: $concept_id})
-RETURN prereq.id AS concept_id,
-       prereq.name AS name,
-       prereq.slug AS slug,
-       length(path) AS depth
-ORDER BY depth DESC
-```
-
-Worker/API kết hợp với `user_concept_progress` trong SQL để filter:
-- Chỉ trả prerequisite có `status != 'mastered'`
-- Sort theo depth DESC (học prerequisite sâu nhất trước)
-
-### 8.3 Knowledge Map — "Bản đồ tri thức cá nhân"
-
-**Query: lấy concept graph + user progress cho 1 course:**
-
-```cypher
--- Lấy tất cả concepts liên quan đến course:
-MATCH (c:Course {id: $course_id})-[:HAS_DOCUMENT]->(d:Document)-[:HAS_CHUNK]->(chunk:Chunk)-[:MENTIONS]->(concept:Concept)
-WITH DISTINCT concept
-OPTIONAL MATCH (concept)-[:PREREQUISITE_OF]->(target:Concept)
-OPTIONAL MATCH (prereq:Concept)-[:PREREQUISITE_OF]->(concept)
-RETURN concept.id AS id,
-       concept.name AS name,
-       concept.slug AS slug,
-       concept.category AS category,
-       collect(DISTINCT target.id) AS unlocks,      -- concept này là tiền đề của gì
-       collect(DISTINCT prereq.id) AS requires      -- concept này cần học trước gì
-```
-
-Frontend (D3.js/vis.js) nhận graph data + join với `user_concept_progress` SQL:
-- **Xanh**: mastered (score >= 0.8)
-- **Vàng**: in_progress (0.5 <= score < 0.8)
-- **Đỏ**: weak (score < 0.5)
-- **Xám**: not_started
-
-### 8.4 Dynamic Learning Path — "Gợi ý học gì tiếp?"
-
-Logic tính toán (trong application layer, không phải Neo4j):
-
-```
-1. Lấy tất cả concepts trong course (Neo4j query trên)
-2. Join với user_concept_progress (SQL)
-3. Tìm concepts "ready to learn":
-   - status = "not_started" hoặc "weak"
-   - TẤT CẢ prerequisites đều "mastered"
-4. Sort theo:
-   - Ưu tiên "weak" trước "not_started" (ôn lại trước khi học mới)
-   - Ưu tiên concept có nhiều dependents (unlock nhiều bài hơn)
-5. Trả top-N concepts → map sang chunks/quizzes
-```
-
-## 9. Hybrid Retrieval (planned)
+## 8. Hybrid Retrieval (planned)
 
 ### Chiến lược: Retrieve-then-Expand (không rerank)
 
@@ -468,31 +362,30 @@ RETURN prev.id AS chunk_id, 'prev' AS source
 
 Kết quả: Qdrant top-K giữ nguyên thứ tự + append expanded chunks ở cuối.
 
-### Concept-based expansion (Phase C — khi concept graph đã có)
+### Concept-based expansion (khi concept graph đã có)
 
-Khi user query liên quan đến concept cụ thể, expand qua prerequisite graph:
+Khi user query liên quan đến concept cụ thể, expand qua concept graph:
 
 ```cypher
--- Lấy chunks từ prerequisite concepts (giúp RAG chatbot giải thích nền tảng):
+-- Lấy chunks cùng concept (concept co-mention expansion):
 MATCH (c:Chunk)-[:MENTIONS]->(concept:Concept)
 WHERE c.id IN $topKChunkIds
 WITH DISTINCT concept
-MATCH (prereq:Concept)-[:PREREQUISITE_OF]->(concept)
-MATCH (prereqChunk:Chunk)-[:MENTIONS]->(prereq)
-WHERE NOT prereqChunk.id IN $topKChunkIds
-RETURN prereqChunk.id AS chunk_id, 'prerequisite' AS source
+MATCH (otherChunk:Chunk)-[:MENTIONS]->(concept)
+WHERE NOT otherChunk.id IN $topKChunkIds
+RETURN otherChunk.id AS chunk_id, 'concept' AS source
 LIMIT 5
 ```
 
-Use case: RAG chatbot giải thích "tích phân" → kéo thêm chunks về "đạo hàm" (prerequisite) để context đầy đủ hơn.
+Use case: query về "đạo hàm" → kéo thêm chunks khác cũng MENTIONS concept "đạo hàm" nhưng không nằm trong top-K Qdrant.
 
 ### Khi nào thêm complexity?
 
 - **Intent classification**: chỉ thêm khi có evidence rằng 1 strategy chung không đủ tốt
 - **Reranking formula**: chỉ thêm khi có eval dataset (golden queries + expected chunks) để tune weights
-- **Prerequisite expansion**: bật khi concept graph + prerequisite edges đã đủ dày
+- **Prerequisite expansion**: bật khi prerequisite edges đã đủ dày (Phase 2)
 
-## 10. Đồng bộ dữ liệu an toàn (Outbox Pattern) — implemented
+## 9. Đồng bộ dữ liệu an toàn (Outbox Pattern) — implemented
 
 1. Trong cùng transaction SQL: ghi dữ liệu business + ghi `outbox_events`.
 2. Outbox Worker poll events `status=PENDING`, push update sang Qdrant/Neo4j.
@@ -509,7 +402,7 @@ Use case: RAG chatbot giải thích "tích phân" → kéo thêm chunks về "đ
 
 **Guard logic**: Outbox Worker check `_ensure_document_still_exists()` trước khi project heading/concept. Nếu document đã bị xóa (race condition), skip event và mark done — tránh project orphan data.
 
-## 11. Xóa Document (DeleteDocument) — implemented
+## 10. Xóa Document (DeleteDocument) — implemented
 
 Xóa đồng bộ cả 3 stores, **outbox event trong cùng transaction với DELETE**:
 
@@ -532,7 +425,7 @@ COMMIT
 - Nếu app crash giữa chừng: outbox event đã commit → Outbox Worker sẽ retry cleanup Qdrant/Neo4j.
 - Nếu Qdrant delete thành công nhưng Neo4j fail → outbox giữ PENDING, retry lần sau (Qdrant delete idempotent).
 
-## 12. Quiz Generation Pipeline (planned)
+## 11. Quiz Generation Pipeline (planned — core of v1 thesis)
 
 ### Flow
 
@@ -565,28 +458,11 @@ For each question, return JSON:
 4. **Output**: Upsert vào `quizzes` table. Mỗi quiz link concept_id + chunk_id (chunk chính tạo ra câu hỏi).
 5. **Review**: Giảng viên có thể edit/approve trước khi publish cho học viên.
 
-### Quiz Evaluation → User Progress
+### Evaluation
 
-```
-Học viên trả lời quiz
-    ↓
-INSERT quiz_attempts (user_id, quiz_id, selected_index, is_correct)
-    ↓
-UPSERT user_concept_progress:
-    total_attempts += 1
-    correct_attempts += (1 if is_correct)
-    score = correct_attempts / total_attempts
-    status = CASE
-        WHEN total_attempts < 3        THEN 'in_progress'
-        WHEN score >= 0.8              THEN 'mastered'
-        WHEN score < 0.5               THEN 'weak'
-        ELSE 'in_progress'
-    END
-    ↓
-Nếu status = 'weak':
-    → Trigger prerequisite traversal (section 8.2)
-    → Gợi ý học lại prerequisite concepts
-```
+Baseline so sánh: **"naive GPT prompt"** (đưa raw text, không concept graph, không chunk structure) vs pipeline output (concept-aware, chunk-grounded quiz). Đo bằng expert rubric (relevance, difficulty accuracy, distractor quality).
+
+> **Deferred to Phase 2:** Quiz attempts tracking, user progress scoring (EWMA/BKT), prerequisite traversal khi user weak → thuộc Adaptive Learning / Tutor Chat scope.
 
 ### Worker
 
@@ -595,7 +471,7 @@ Quiz generation có thể là use case sync (giảng viên bấm generate → ch
 - Payload: `{ concept_id, num_questions, difficulty }`
 - Container: chỉ cần Postgres + LLM client (không cần Qdrant/Neo4j/Embedder)
 
-## 13. Video Pipeline (planned)
+## 12. Video Pipeline (planned)
 
 ### Flow
 
@@ -633,7 +509,7 @@ Embed → Upsert Qdrant → Core Pipeline bình thường
 - Local whisper (faster-whisper): free, cần GPU, slower
 - Có thể dùng Google Speech-to-Text cho tiếng Việt quality tốt hơn
 
-## 14. Rollout
+## 13. Rollout
 
 ### Phase A — Core Pipeline (done)
 - [x] Chuẩn hóa metadata SQL + payload Qdrant (`course_id`, `owner_id`)
@@ -656,24 +532,24 @@ Embed → Upsert Qdrant → Core Pipeline bình thường
 - [x] Outbox Worker delete: Qdrant `delete_by_document()` + Neo4j `DETACH DELETE`
 - [x] Neo4j `delete_document()` method
 
-### Phase C — Prerequisite + Quiz + Hybrid Retrieval (next)
-- [ ] SQL schema: `concept_prerequisites`, `quizzes`, `quiz_attempts`, `user_concept_progress`
-- [ ] Neo4j: `PREREQUISITE_OF` edge + cycle detection
-- [ ] IGraphStore: `upsert_prerequisite()`, `get_prerequisites()`, `get_knowledge_map()`
+### Phase C — Quiz Generation + Hybrid Retrieval (next — v1 thesis scope)
+- [ ] SQL schema: `concept_prerequisites`, `quizzes`
+- [ ] Neo4j: `PREREQUISITE_OF` edge (manual) + cycle detection
+- [ ] IGraphStore: `upsert_prerequisite()`, `get_prerequisites()`
 - [ ] API: prerequisite CRUD (giảng viên define manual)
-- [ ] Hybrid retrieval: Qdrant top-K + Neo4j expand (sibling + NEXT chunks)
+- [ ] Hybrid retrieval: Qdrant top-K + Neo4j expand (sibling + NEXT + concept co-mention)
 - [ ] Quiz generation: LLM 1-call per concept → structured JSON → store SQL
-- [ ] Quiz evaluation → `user_concept_progress` update
-- [ ] Prerequisite traversal: khi user weak → trace prerequisite graph → gợi ý học lại
-- [ ] Knowledge Map API: concept graph + user progress cho frontend visualization
+- [ ] Quiz evaluation: expert rubric — pipeline quiz vs naive GPT baseline
+- [ ] Concept extraction Phase 2: LLM 1-call + embedding dedup (nếu Heading = Concept không đủ)
 
-### Phase D — Video + RAG Chatbot + Adaptive (future)
-- [ ] Video pipeline: Whisper STT → transcript → chunk → embed (new parser)
-- [ ] FFmpeg clip extraction (optional): cắt video theo timestamp
-- [ ] Concept extraction Phase 2: LLM 1-call + embedding dedup
-- [ ] RELATED_TO edges (co-occurrence)
-- [ ] Prerequisite auto-suggest: dựa trên document order + co-occurrence, cần giảng viên confirm
-- [ ] RAG chatbot: Qdrant search + Neo4j prerequisite expansion → LLM answer grounded
-- [ ] Dynamic learning path: tính "ready to learn" concepts dựa trên prerequisite + user progress
-- [ ] Concept-based hybrid retrieval expansion (prerequisite chunks trong RAG context)
-- [ ] KPI: Recall@K, MRR, latency p95, answer groundedness, learning outcome metrics
+### Phase 2 — Adaptive Learning + Tutor Chat (deferred — không thuộc v1)
+- [ ] `quiz_attempts`, `user_concept_progress` tables
+- [ ] `:Learner` node, `:MASTERS`/`:ACHIEVES` edges
+- [ ] Mastery estimator (EWMA/BKT)
+- [ ] `GetLearningPath`, `SubmitQuizAttempt` use cases
+- [ ] Dynamic learning path: "ready to learn" concepts
+- [ ] Prerequisite traversal: khi user weak → trace prerequisite graph
+- [ ] Knowledge Map API: concept graph + user progress cho frontend
+- [ ] RAG chatbot / tutor chat
+- [ ] Video pipeline: Whisper STT → transcript → chunk → embed
+- [ ] KPI: Recall@K, MRR, latency p95, learning outcome metrics

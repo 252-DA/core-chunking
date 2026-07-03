@@ -1,8 +1,8 @@
 from dataclasses import replace
 
-from src.application.use_cases._pipeline_core import PipelineCore
-from src.domain.exceptions import ProcessingError
-from src.domain.ports.metadata_store import IngestionStatus
+from document_chunk.application.use_cases._pipeline_core import PipelineCore
+from document_chunk.domain.exceptions import ProcessingError
+from document_chunk.domain.ports.metadata_store import IngestionStatus
 
 
 class TestPipelineCore:

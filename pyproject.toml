@@ -31,9 +31,15 @@ dependencies = [
     "bullmq>=2.0.0",
     "redis>=5.0.0",
     # gRPC
-    "grpcio>=1.63.0",
-    "grpcio-tools>=1.63.0",
+    "grpcio>=1.80.0",
+    "grpcio-tools>=1.80.0",
     "protobuf>=4.25.0",
+    # HTTP API + Swagger UI
+    "fastapi>=0.115.0",
+    "uvicorn>=0.35.0",
+    "python-multipart>=0.0.20",
+    # LLM generation
+    "google-genai>=1.67.0",
     # Utilities
     "numpy>=1.24.0,<2.0.0",
     "tqdm>=4.65.0",
@@ -54,6 +60,10 @@ embeddings = [
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
 ]
+llamaindex = [
+    "llama-index-core>=0.10.0",
+    "llama-index-embeddings-huggingface>=0.3.0",  # cho SemanticSplitter
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -66,12 +76,11 @@ dev = [
     "ipdb>=0.13.13",
 ]
 all = [
-    "document-chunk[embeddings,dev]",
+    "document-chunk[embeddings,llamaindex,dev]",
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
 
 [tool.black]
 line-length = 100
@@ -94,4 +103,4 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 asyncio_mode = "auto"
-addopts = "-v --cov=src --cov-report=term-missing"
+addopts = "-v --cov=document_chunk --cov-report=term-missing"

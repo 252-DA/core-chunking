@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from src.adapters.graph.neo4j_graph_store import Neo4jGraphStore
-from src.infrastructure.config import Neo4jConfig
+from document_chunk.adapters.graph.neo4j_graph_store import Neo4jGraphStore
+from document_chunk.infrastructure.config import Neo4jConfig
 
 
 class TestNeo4jGraphStore:
