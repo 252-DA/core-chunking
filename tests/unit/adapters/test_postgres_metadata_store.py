@@ -1,12 +1,13 @@
 from contextlib import contextmanager
 
 from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     StoredChunkMetadata,
     StoredLessonCard,
     StoredQuizItem,
 )
-from document_chunk.infrastructure.config import OutboxConfig, SqlConfig
+from document_chunk.infrastructure.config import SqlConfig
 
 
 class _FakeCursor:
@@ -49,7 +50,7 @@ class _FakeConnection:
 
 class TestPostgresMetadataStore:
     def test_upsert_chunks_with_outbox_uses_one_commit(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
         connection = _FakeConnection(cursor)
 
@@ -72,7 +73,7 @@ class TestPostgresMetadataStore:
                     language="en",
                 )
             ],
-            event_type="heading_graph_project",
+            event_type=OutboxEventType.HEADING_GRAPH_PROJECT,
             aggregate_id="doc-001",
             payload={"document_id": "doc-001"},
         )
@@ -86,7 +87,7 @@ class TestPostgresMetadataStore:
         assert "INSERT INTO outbox_events" in cursor.execute_calls[0][0]
 
     def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
         connection = _FakeConnection(cursor)
 
@@ -130,7 +131,7 @@ class TestPostgresMetadataStore:
             ],
             concepts=[],
             chunk_concepts=[],
-            outbox_event_type="concept_graph_project",
+            outbox_event_type=OutboxEventType.CONCEPT_GRAPH_PROJECT,
             outbox_payload={"document_id": "doc-001"},
         )
 
@@ -146,7 +147,7 @@ class TestPostgresMetadataStore:
         assert executemany_sql.count("INSERT INTO quiz_items") == 1
 
     def test_list_chunks_joins_chunk_contents(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
         cursor.fetchall_result = [
             (
@@ -177,3 +178,65 @@ class TestPostgresMetadataStore:
         assert chunk.content_text == "Chunk content"
         assert chunk.embedding_input == "Introduction\n\nChunk content"
         assert "LEFT JOIN chunk_contents" in cursor.execute_calls[0][0]
+
+    def test_delete_uses_canonical_document_deleted_event(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        cursor = _FakeCursor()
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.delete("doc-001")
+
+        assert result.is_ok()
+        assert connection.commit_calls == 1
+        event_insert_params = cursor.execute_calls[1][1]
+        assert event_insert_params[1] == OutboxEventType.DOCUMENT_DELETED.value
+
+    def test_persist_curriculum_quiz_items_targets_lo_without_replacing_document(
+        self,
+        monkeypatch,
+    ):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        cursor = _FakeCursor()
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.persist_curriculum_quiz_items(
+            lo_id="lo-001",
+            bloom_level="analyze",
+            quiz_items=[
+                StoredQuizItem(
+                    question_id="quiz-001",
+                    document_id="doc-001",
+                    primary_chunk_id="chunk-001",
+                    source_chunk_ids=("chunk-001",),
+                    heading_path=("Chapter 1",),
+                    question="Which conclusion follows?",
+                    choices=("A", "B", "C", "D"),
+                    correct_index=2,
+                    explanation="C follows from the source.",
+                    difficulty="medium",
+                    question_index=0,
+                    model_id="gemini-test",
+                )
+            ],
+        )
+
+        assert result.is_ok()
+        assert connection.commit_calls == 1
+        assert len(cursor.execute_calls) == 0
+        assert len(cursor.executemany_calls) == 1
+        query, rows = cursor.executemany_calls[0]
+        assert "INSERT INTO quiz_items" in query
+        assert "UPDATE quiz_items SET deleted_at" not in query
+        assert rows[0][8] == 4

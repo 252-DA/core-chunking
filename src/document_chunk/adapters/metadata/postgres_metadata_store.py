@@ -7,12 +7,12 @@ from threading import Lock
 
 from document_chunk.domain.entities.document import Document, DocumentType
 from document_chunk.domain.exceptions import MetadataStoreError
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     DocumentFilter,
     DocumentSummary,
     IMetadataStore,
     IngestionStatus,
-    OutboxEvent,
     StoredAssessment,
     StoredChapter,
     StoredChunkConcept,
@@ -25,15 +25,13 @@ from document_chunk.domain.ports.metadata_store import (
     StoredLessonCard,
     StoredQuizItem,
 )
-from document_chunk.infrastructure.config import OutboxConfig, SqlConfig
+from document_chunk.infrastructure.config import SqlConfig
 from document_chunk.shared.logger import get_logger
 from document_chunk.shared.result import Err, Ok, Result
 from document_chunk.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
-
-_EVENT_DOCUMENT_DELETED = "document_deleted"
 
 
 def _stable_uuid(value: str) -> str:
@@ -44,9 +42,8 @@ def _stable_uuid(value: str) -> str:
 
 
 class PostgresMetadataStore(IMetadataStore):
-    def __init__(self, sql_config: SqlConfig, outbox_config: OutboxConfig) -> None:
+    def __init__(self, sql_config: SqlConfig) -> None:
         self._sql_config = sql_config
-        self._outbox_config = outbox_config
         self._schema_initialized = False
         self._schema_init_lock = Lock()
         self._pool = None
@@ -524,14 +521,14 @@ class PostgresMetadataStore(IMetadataStore):
     def upsert_chunks_with_outbox(
         self,
         chunks: list[StoredChunkMetadata],
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
         event_id = str(uuid.uuid4())
         with tracer.start_as_current_span("postgres.upsert_chunks_with_outbox") as span:
             span.set_attribute("chunks.count", len(chunks))
-            span.set_attribute("event_type", event_type)
+            span.set_attribute("event_type", OutboxEventType.normalize(event_type).value)
             span.set_attribute("aggregate_id", aggregate_id)
             try:
                 with self._connection() as conn:
@@ -665,7 +662,7 @@ class PostgresMetadataStore(IMetadataStore):
         quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
-        outbox_event_type: str | None = None,
+        outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
         event_id: str | None = None
@@ -696,6 +693,106 @@ class PostgresMetadataStore(IMetadataStore):
             return Ok(event_id)
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def persist_curriculum_quiz_items(
+        self,
+        lo_id: str,
+        bloom_level: str | int | None,
+        quiz_items: list[StoredQuizItem],
+    ) -> Result[None, Exception]:
+        if not quiz_items:
+            return Ok(None)
+
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        WITH target_context AS (
+                            SELECT ch.course_id, lo.statement_vi
+                            FROM learning_outcomes lo
+                            JOIN chapters ch ON ch.chapter_id = lo.chapter_id
+                            WHERE lo.lo_id = %s::uuid
+                              AND lo.deleted_at IS NULL
+                              AND lo.is_current = TRUE
+                        ),
+                        lesson_row AS (
+                            INSERT INTO lessons (course_id, lo_id, title, status)
+                            SELECT course_id, %s::uuid,
+                                   COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
+                            FROM target_context
+                            ON CONFLICT (course_id, lo_id)
+                            DO UPDATE SET updated_at = NOW()
+                            RETURNING lesson_id, course_id
+                        )
+                        INSERT INTO quiz_items (
+                            quiz_id,
+                            lesson_id,
+                            course_id,
+                            lo_id,
+                            type,
+                            question,
+                            options,
+                            correct_answer,
+                            explanation,
+                            bloom_level,
+                            source_chunk_ids,
+                            status,
+                            deleted_at
+                        )
+                        SELECT %s::uuid, lesson_id, course_id, %s::uuid,
+                               'MCQ_SINGLE', %s, %s::jsonb, %s::jsonb, %s,
+                               %s, %s::uuid[], 'GENERATED_DRAFT', NULL
+                        FROM lesson_row
+                        ON CONFLICT (quiz_id) DO UPDATE SET
+                            lesson_id = EXCLUDED.lesson_id,
+                            course_id = EXCLUDED.course_id,
+                            lo_id = EXCLUDED.lo_id,
+                            question = EXCLUDED.question,
+                            options = EXCLUDED.options,
+                            correct_answer = EXCLUDED.correct_answer,
+                            explanation = EXCLUDED.explanation,
+                            bloom_level = EXCLUDED.bloom_level,
+                            source_chunk_ids = EXCLUDED.source_chunk_ids,
+                            status = 'GENERATED_DRAFT',
+                            updated_at = NOW(),
+                            deleted_at = NULL;
+                        """,
+                        [
+                            (
+                                lo_id,
+                                lo_id,
+                                _stable_uuid(item.question_id),
+                                lo_id,
+                                item.question,
+                                json.dumps(list(item.choices)),
+                                json.dumps(
+                                    item.choices[item.correct_index]
+                                    if 0 <= item.correct_index < len(item.choices)
+                                    else None
+                                ),
+                                item.explanation,
+                                self._bloom_level(bloom_level),
+                                [
+                                    _stable_uuid(chunk_id)
+                                    for chunk_id in (
+                                        item.source_chunk_ids
+                                        or (item.primary_chunk_id,)
+                                    )
+                                ],
+                            )
+                            for item in quiz_items
+                        ],
+                    )
+                conn.commit()
+            return Ok(None)
+        except Exception as exc:
+            return Err(
+                MetadataStoreError(
+                    "PostgreSQL curriculum quiz persistence failed",
+                    cause=exc,
+                )
+            )
 
     def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
         try:
@@ -793,7 +890,7 @@ class PostgresMetadataStore(IMetadataStore):
 
     def append_outbox_event(
         self,
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
@@ -810,88 +907,6 @@ class PostgresMetadataStore(IMetadataStore):
                     )
                 conn.commit()
             return Ok(event_id)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
-
-    def fetch_pending_outbox(self, limit: int = 100) -> Result[list[OutboxEvent], Exception]:
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT event_id::text,
-                               event_type,
-                               aggregate_id::text,
-                               payload::text,
-                               status,
-                               retry_count,
-                               last_error,
-                               occurred_at,
-                               COALESCE(processed_at, occurred_at)
-                        FROM outbox_events
-                        WHERE status = 'PENDING'
-                        ORDER BY occurred_at ASC
-                        LIMIT %s;
-                        """,
-                        (limit,),
-                    )
-                    rows = cur.fetchall()
-
-            events = [
-                OutboxEvent(
-                    id=row[0],
-                    event_type=row[1],
-                    aggregate_id=row[2],
-                    payload=json.loads(row[3]),
-                    status=row[4],
-                    attempts=row[5],
-                    error_msg=row[6],
-                    created_at=row[7],
-                    updated_at=row[8],
-                )
-                for row in rows
-            ]
-            return Ok(events)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
-
-    def mark_outbox_done(self, event_id: str) -> Result[None, Exception]:
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE outbox_events
-                        SET status = 'PROCESSED',
-                            processed_at = NOW()
-                        WHERE event_id = %s::uuid;
-                        """,
-                        (event_id,),
-                    )
-                conn.commit()
-            return Ok(None)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
-
-    def mark_outbox_failed(self, event_id: str, error_msg: str) -> Result[None, Exception]:
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE outbox_events
-                        SET retry_count = retry_count + 1,
-                            last_error = %s,
-                            status = CASE
-                                WHEN retry_count + 1 >= %s THEN 'FAILED'
-                                ELSE 'PENDING'
-                            END
-                        WHERE event_id = %s::uuid;
-                        """,
-                        (error_msg, self._outbox_config.max_attempts, event_id),
-                    )
-                conn.commit()
-            return Ok(None)
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
@@ -1032,26 +1047,12 @@ class PostgresMetadataStore(IMetadataStore):
                         """,
                         (document_id,),
                     )
-                    cur.execute(
-                        """
-                        INSERT INTO outbox_events (
-                            event_id,
-                            event_type,
-                            aggregate_type,
-                            aggregate_id,
-                            payload,
-                            status,
-                            retry_count,
-                            last_error
-                        )
-                        VALUES (%s::uuid, %s, 'document', %s::uuid, %s::jsonb, 'PENDING', 0, NULL);
-                        """,
-                        (
-                            event_id,
-                            "DOCUMENT_DELETED",
-                            document_id,
-                            json.dumps({"document_id": document_id}),
-                        ),
+                    self._append_outbox_event_cursor(
+                        cur=cur,
+                        event_id=event_id,
+                        event_type=OutboxEventType.DOCUMENT_DELETED,
+                        aggregate_id=document_id,
+                        payload={"document_id": document_id},
                     )
                     cur.execute(
                         "UPDATE chunks SET deleted_at = NOW() WHERE document_id = %s::uuid;",
@@ -1432,6 +1433,40 @@ class PostgresMetadataStore(IMetadataStore):
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
+    def update_content_generation_request(
+        self,
+        request_id: str,
+        status: str,
+        generated_count: int | None = None,
+        last_error: str | None = None,
+    ) -> Result[None, Exception]:
+        allowed_statuses = {"QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"}
+        if status not in allowed_statuses:
+            return Err(MetadataStoreError(f"Invalid content-generation status: {status}"))
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE content_generation_requests
+                        SET status = %s,
+                            generated_count = COALESCE(%s, generated_count),
+                            last_error = %s,
+                            updated_at = NOW()
+                        WHERE request_id = %s::uuid;
+                        """,
+                        (status, generated_count, last_error, request_id),
+                    )
+                conn.commit()
+            return Ok(None)
+        except Exception as exc:
+            return Err(
+                MetadataStoreError(
+                    "PostgreSQL metadata store operation failed",
+                    cause=exc,
+                )
+            )
+
     def _row_to_document(self, row: tuple) -> Document:
         doc_type = self._doc_type_from_mime_or_path(row[2], row[3])
         return Document(
@@ -1805,7 +1840,7 @@ class PostgresMetadataStore(IMetadataStore):
         self,
         cur,
         aggregate_id: str,
-        event_type: str | None,
+        event_type: OutboxEventType | None,
     ) -> None:
         if event_type is None:
             return
@@ -1814,17 +1849,17 @@ class PostgresMetadataStore(IMetadataStore):
             """
             DELETE FROM outbox_events
             WHERE aggregate_id = %s::uuid
-              AND event_type = %s
+              AND UPPER(event_type) = %s
               AND status = 'PENDING';
             """,
-            (aggregate_id, event_type),
+            (aggregate_id, OutboxEventType.normalize(event_type).value),
         )
 
     def _append_outbox_event_cursor(
         self,
         cur,
         event_id: str,
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> None:
@@ -1842,5 +1877,10 @@ class PostgresMetadataStore(IMetadataStore):
             )
             VALUES (%s::uuid, %s, 'document', %s::uuid, %s::jsonb, 'PENDING', 0, NULL);
             """,
-            (event_id, event_type, aggregate_id, json.dumps(payload)),
+            (
+                event_id,
+                OutboxEventType.normalize(event_type).value,
+                aggregate_id,
+                json.dumps(payload),
+            ),
         )
