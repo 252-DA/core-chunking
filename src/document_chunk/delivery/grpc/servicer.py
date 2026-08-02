@@ -11,10 +11,15 @@ File transfer:
 """
 import tempfile
 from pathlib import Path
+from typing import Protocol
 
 import grpc
 
 from document_chunk.application.dto.document_dto import ProcessDocumentRequest
+from document_chunk.application.dto.generation_dto import (
+    GenerateCurriculumQuizRequest,
+    GenerateCurriculumQuizResponse,
+)
 from document_chunk.application.dto.search_dto import SearchRequest
 from document_chunk.application.use_cases.delete_document import (
     DeleteDocumentRequest,
@@ -42,13 +47,22 @@ from document_chunk.application.use_cases.search_by_learning_outcome import (
 from document_chunk.application.use_cases.search_chunks import SearchChunksUseCase
 from document_chunk.delivery.grpc.proto import chunking_pb2, chunking_pb2_grpc
 from document_chunk.domain.entities.document import DocumentType
+from document_chunk.domain.ports.metadata_store import IMetadataStore
 from document_chunk.shared.logger import get_logger
+from document_chunk.shared.result import Result
 from document_chunk.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
 _VERSION = "1.0.0"
+
+
+class GenerateCurriculumQuizExecutor(Protocol):
+    def execute(
+        self,
+        request: GenerateCurriculumQuizRequest,
+    ) -> Result[GenerateCurriculumQuizResponse, Exception]: ...
 
 
 class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
@@ -63,7 +77,8 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         get_quiz_use_case: GetQuizUseCase,
         ingest_curriculum_use_case: IngestCurriculumUseCase | None = None,
         search_by_lo_use_case: SearchByLearningOutcomeUseCase | None = None,
-        generate_curriculum_quiz_use_case=None,
+        generate_curriculum_quiz_use_case: GenerateCurriculumQuizExecutor | None = None,
+        metadata_store: IMetadataStore | None = None,
     ) -> None:
         self._process = process_use_case
         self._search = search_use_case
@@ -75,6 +90,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         self._ingest_curriculum = ingest_curriculum_use_case
         self._search_by_lo = search_by_lo_use_case
         self._generate_curriculum_quiz = generate_curriculum_quiz_use_case
+        self._metadata_store = metadata_store
 
     # ------------------------------------------------------------------
     # ProcessDocument (sync)
@@ -494,11 +510,11 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
     ) -> chunking_pb2.GetCurriculumResponse:
         if not request.course_id:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
-        if self._ingest_curriculum is None:
+        metadata_store = self._metadata_store
+        if metadata_store is None:
             context.abort(grpc.StatusCode.UNIMPLEMENTED, "Curriculum store not configured")
+        assert metadata_store is not None
 
-        from document_chunk.domain.ports.metadata_store import IMetadataStore
-        metadata_store: IMetadataStore = self._ingest_curriculum._metadata_store  # type: ignore[attr-defined]
         result = metadata_store.get_curriculum(request.course_id)
         if result.is_err():
             context.abort(grpc.StatusCode.INTERNAL, str(result.error))
@@ -607,8 +623,10 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_kind is required")
         if not request.target_code:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_code is required")
-        if self._generate_curriculum_quiz is None:
+        generate_curriculum_quiz = self._generate_curriculum_quiz
+        if generate_curriculum_quiz is None:
             context.abort(grpc.StatusCode.UNIMPLEMENTED, "GenerateCurriculumQuiz not configured")
+        assert generate_curriculum_quiz is not None
 
         logger.info(
             "grpc.GenerateCurriculumQuiz.received",
@@ -617,10 +635,8 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
             target_code=request.target_code,
         )
 
-        from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizRequest as WRequest
-
-        result = self._generate_curriculum_quiz.execute(
-            WRequest(
+        result = generate_curriculum_quiz.execute(
+            GenerateCurriculumQuizRequest(
                 course_id=request.course_id,
                 target_kind=request.target_kind,
                 target_code=request.target_code,

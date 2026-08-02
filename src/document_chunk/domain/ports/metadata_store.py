@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import builtins
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -340,10 +343,10 @@ class IMetadataStore(ABC):
     def upsert_curriculum(
         self,
         course: "StoredCourse",
-        chapters: "list[StoredChapter]",
-        learning_outcomes: "list[StoredLearningOutcome]",
-        assessments: "list[StoredAssessment]",
-        lo_assessment_links: "list[tuple[str, str]]",
+        chapters: builtins.list[StoredChapter],
+        learning_outcomes: builtins.list[StoredLearningOutcome],
+        assessments: builtins.list[StoredAssessment],
+        lo_assessment_links: builtins.list[tuple[str, str]],
     ) -> Result[None, Exception]:
         """Insert/update toàn bộ curriculum cho một course trong một transaction."""
         ...
@@ -352,7 +355,13 @@ class IMetadataStore(ABC):
     def get_curriculum(
         self, course_id: str
     ) -> Result[
-        "tuple[StoredCourse, list[StoredChapter], list[StoredLearningOutcome], list[StoredAssessment]] | None",
+        tuple[
+            StoredCourse,
+            builtins.list[StoredChapter],
+            builtins.list[StoredLearningOutcome],
+            builtins.list[StoredAssessment],
+        ]
+        | None,
         Exception,
     ]:
         """Lấy curriculum đầy đủ theo course_id. None nếu chưa có."""
@@ -361,21 +370,21 @@ class IMetadataStore(ABC):
     @abstractmethod
     def list_los_by_chapter(
         self, course_id: str, chapter_code: str
-    ) -> Result["list[StoredLearningOutcome]", Exception]:
+    ) -> Result[builtins.list[StoredLearningOutcome], Exception]:
         """Lấy LOs thuộc chapter (L.O.N.*) theo course_id + chapter_code."""
         ...
 
     @abstractmethod
     def list_los_by_assessment(
         self, course_id: str, assessment_code: str
-    ) -> Result["list[StoredLearningOutcome]", Exception]:
+    ) -> Result[builtins.list[StoredLearningOutcome], Exception]:
         """Lấy LOs được evaluate bởi assessment_code."""
         ...
 
     @abstractmethod
     def upsert_chunk_lo_mappings(
         self,
-        mappings: "list[StoredChunkLOMapping]",
+        mappings: builtins.list[StoredChunkLOMapping],
     ) -> Result[None, Exception]:
         """Bulk upsert chunk→LO mapping, ON CONFLICT update confidence + source."""
         ...
@@ -383,7 +392,7 @@ class IMetadataStore(ABC):
     @abstractmethod
     def list_chunks_for_lo(
         self, lo_id: str
-    ) -> Result["list[StoredChunkMetadata]", Exception]:
+    ) -> Result[builtins.list[StoredChunkMetadata], Exception]:
         """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
         ...
 
@@ -408,6 +417,6 @@ class IMetadataStore(ABC):
         course_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> Result["list[DocumentSummary]", Exception]:
+    ) -> Result[builtins.list[DocumentSummary], Exception]:
         """List document summaries (có chunk_count) cho LMS/web admin, optional filter theo course_id."""
         ...

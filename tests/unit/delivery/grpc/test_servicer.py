@@ -4,6 +4,8 @@ from document_chunk.application.dto.generation_dto import (
     CardSection,
     CardsResponse,
     DocumentStatusResponse,
+    GenerateCurriculumQuizRequest,
+    GenerateCurriculumQuizResponse,
     LessonCardItem,
     QuizQuestionItem,
     QuizResponse,
@@ -12,7 +14,13 @@ from document_chunk.application.dto.search_dto import SearchResponse
 from document_chunk.application.use_cases.delete_document import DeleteDocumentResponse
 from document_chunk.delivery.grpc.proto import chunking_pb2
 from document_chunk.delivery.grpc.servicer import ChunkingServicer
-from document_chunk.domain.ports.metadata_store import IngestionStatus
+from document_chunk.domain.ports.metadata_store import (
+    IngestionStatus,
+    StoredAssessment,
+    StoredChapter,
+    StoredCourse,
+    StoredLearningOutcome,
+)
 from document_chunk.shared.result import Ok
 
 
@@ -22,7 +30,12 @@ class _FakeContext:
 
 
 class TestChunkingServicer:
-    def _build_servicer(self):
+    def _build_servicer(
+        self,
+        *,
+        metadata_store=None,
+        generate_curriculum_quiz_use_case=None,
+    ):
         process_use_case = MagicMock()
         search_use_case = MagicMock()
         enqueue_use_case = MagicMock()
@@ -38,6 +51,8 @@ class TestChunkingServicer:
             get_document_status_use_case=get_document_status_use_case,
             get_cards_use_case=get_cards_use_case,
             get_quiz_use_case=get_quiz_use_case,
+            generate_curriculum_quiz_use_case=generate_curriculum_quiz_use_case,
+            metadata_store=metadata_store,
         )
         return (
             servicer,
@@ -224,3 +239,88 @@ class TestChunkingServicer:
         assert response.success is True
         assert response.message == "Delete scheduled for document doc-001"
         delete_use_case.execute.assert_called_once()
+
+    def test_get_curriculum_uses_injected_metadata_store(self):
+        metadata_store = MagicMock()
+        metadata_store.get_curriculum.return_value = Ok(
+            (
+                StoredCourse(
+                    course_id="course-001",
+                    code="CS101",
+                    title_vi="Nhap mon",
+                ),
+                [
+                    StoredChapter(
+                        chapter_id="chapter-001",
+                        course_id="course-001",
+                        code="CH1",
+                        title="Introduction",
+                    )
+                ],
+                [
+                    StoredLearningOutcome(
+                        lo_id="lo-001",
+                        course_id="course-001",
+                        code="LO1",
+                        parent_code=None,
+                        statement_vi="Giai thich khai niem",
+                    )
+                ],
+                [
+                    StoredAssessment(
+                        assessment_id="assessment-001",
+                        course_id="course-001",
+                        code="A1",
+                        name_vi="Bai kiem tra",
+                    )
+                ],
+            )
+        )
+        servicer, *_ = self._build_servicer(metadata_store=metadata_store)
+
+        response = servicer.GetCurriculum(
+            chunking_pb2.GetCurriculumRequest(course_id="course-001"),
+            _FakeContext(),
+        )
+
+        metadata_store.get_curriculum.assert_called_once_with("course-001")
+        assert response.code == "CS101"
+        assert response.chapters[0].chapter_id == "chapter-001"
+        assert response.learning_outcomes[0].lo_id == "lo-001"
+        assert response.assessments[0].assessment_id == "assessment-001"
+
+    def test_generate_curriculum_quiz_maps_shared_request_dto(self):
+        generate_use_case = MagicMock()
+        generate_use_case.execute.return_value = Ok(
+            GenerateCurriculumQuizResponse(
+                course_id="course-001",
+                lo_id="lo-001",
+                quiz_count=1,
+                question_ids=["question-001"],
+            )
+        )
+        servicer, *_ = self._build_servicer(
+            generate_curriculum_quiz_use_case=generate_use_case
+        )
+
+        response = servicer.GenerateCurriculumQuiz(
+            chunking_pb2.GenerateCurriculumQuizRequest(
+                course_id="course-001",
+                target_kind="lo",
+                target_code="LO1",
+                style="midterm",
+                bloom_level="apply",
+                count=3,
+            ),
+            _FakeContext(),
+        )
+
+        dto = generate_use_case.execute.call_args.args[0]
+        assert isinstance(dto, GenerateCurriculumQuizRequest)
+        assert dto.course_id == "course-001"
+        assert dto.target_kind == "lo"
+        assert dto.style == "midterm"
+        assert dto.bloom_level == "apply"
+        assert dto.count == 3
+        assert response.questions[0].question_id == "question-001"
+        assert response.questions[0].lo_id == "lo-001"

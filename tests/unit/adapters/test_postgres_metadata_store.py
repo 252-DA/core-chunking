@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from inspect import getsource
 
 from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
 from document_chunk.domain.outbox_events import OutboxEventType
@@ -49,6 +50,20 @@ class _FakeConnection:
 
 
 class TestPostgresMetadataStore:
+    def test_store_facade_does_not_bootstrap_or_migrate_the_schema(self):
+        runtime_sources = "\n".join(
+            getsource(component)
+            for component in PostgresMetadataStore.__mro__
+            if component.__module__.startswith(
+                "document_chunk.adapters.metadata.postgres_"
+            )
+        )
+
+        assert not hasattr(PostgresMetadataStore, "_ensure_schema")
+        assert not hasattr(PostgresMetadataStore, "_ensure_schema_initialized")
+        assert "CREATE TABLE" not in runtime_sources
+        assert "_schema_initialized" not in runtime_sources
+
     def test_upsert_chunks_with_outbox_uses_one_commit(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
@@ -80,13 +95,14 @@ class TestPostgresMetadataStore:
 
         assert result.is_ok()
         assert connection.commit_calls == 1
-        assert len(cursor.executemany_calls) == 2
-        assert "INSERT INTO chunks_metadata" in cursor.executemany_calls[0][0]
-        assert "INSERT INTO chunk_contents" in cursor.executemany_calls[1][0]
+        assert len(cursor.executemany_calls) == 1
+        assert "INSERT INTO chunks" in cursor.executemany_calls[0][0]
         assert len(cursor.execute_calls) == 1
         assert "INSERT INTO outbox_events" in cursor.execute_calls[0][0]
 
-    def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(self, monkeypatch):
+    def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(
+        self, monkeypatch
+    ):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
         connection = _FakeConnection(cursor)
@@ -139,14 +155,14 @@ class TestPostgresMetadataStore:
         assert connection.commit_calls == 1
         execute_sql = "\n".join(query for query, _ in cursor.execute_calls)
         executemany_sql = "\n".join(query for query, _ in cursor.executemany_calls)
-        assert "DELETE FROM lesson_cards WHERE document_id = %s" in execute_sql
-        assert "DELETE FROM quiz_items WHERE document_id = %s" in execute_sql
+        assert "UPDATE lesson_cards" in execute_sql
+        assert "UPDATE quiz_items" in execute_sql
         assert "DELETE FROM chunk_concepts" in execute_sql
         assert "DELETE FROM outbox_events" in execute_sql
         assert executemany_sql.count("INSERT INTO lesson_cards") == 1
         assert executemany_sql.count("INSERT INTO quiz_items") == 1
 
-    def test_list_chunks_joins_chunk_contents(self, monkeypatch):
+    def test_list_chunks_reads_current_chunks_table(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
         cursor.fetchall_result = [
@@ -177,7 +193,8 @@ class TestPostgresMetadataStore:
         chunk = result.unwrap()[0]
         assert chunk.content_text == "Chunk content"
         assert chunk.embedding_input == "Introduction\n\nChunk content"
-        assert "LEFT JOIN chunk_contents" in cursor.execute_calls[0][0]
+        assert "FROM chunks" in cursor.execute_calls[0][0]
+        assert "chunk_contents" not in cursor.execute_calls[0][0]
 
     def test_delete_uses_canonical_document_deleted_event(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
