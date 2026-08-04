@@ -6,7 +6,7 @@ from typing import Any
 from document_chunk.adapters.metadata.postgres_repository_utils import (
     PostgresRepositoryBase,
 )
-from document_chunk.domain.exceptions import MetadataStoreError
+from document_chunk.domain.exceptions import DocumentStaleError, MetadataStoreError
 from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import StoredChunkMetadata
 from document_chunk.shared.result import Err, Ok, Result
@@ -50,6 +50,29 @@ class PostgresChunkRepository(PostgresRepositoryBase):
             try:
                 with self._connection() as conn:
                     with conn.cursor() as cur:
+                        document_id = chunks[0].document_id if chunks else aggregate_id
+                        # Delete-race guard: chỉ ghi chunks + outbox khi document
+                        # còn tồn tại và chưa bị soft-delete.
+                        cur.execute(
+                            """
+                            SELECT EXISTS(
+                                SELECT 1
+                                FROM documents
+                                WHERE document_id = %s::uuid
+                                  AND deleted_at IS NULL
+                            );
+                            """,
+                            (document_id,),
+                        )
+                        row = cur.fetchone()
+                        active = bool(row and row[0])
+                        if not active:
+                            return Err(
+                                DocumentStaleError(
+                                    f"document {document_id} not found or deleted",
+                                    document_id=document_id,
+                                )
+                            )
                         self._upsert_chunks_cursor(cur, chunks)
                         self._append_outbox_event_cursor(
                             cur=cur,
@@ -146,6 +169,7 @@ class PostgresChunkRepository(PostgresRepositoryBase):
             SELECT %s::uuid, %s::uuid, d.course_id, %s, %s, %s, %s, %s
             FROM documents d
             WHERE d.document_id = %s::uuid
+              AND d.deleted_at IS NULL
             ON CONFLICT (chunk_id)
             DO UPDATE SET
                 document_id = EXCLUDED.document_id,
@@ -154,8 +178,7 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 heading_path = EXCLUDED.heading_path,
                 page_number = EXCLUDED.page_number,
                 sort_order = EXCLUDED.sort_order,
-                language = EXCLUDED.language,
-                deleted_at = NULL;
+                language = EXCLUDED.language;
             """,
             rows,
         )

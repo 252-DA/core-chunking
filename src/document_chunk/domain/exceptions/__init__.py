@@ -85,6 +85,20 @@ class MetadataStoreError(ChunkingError):
     """Lỗi khi tương tác với metadata database (PostgreSQL)."""
 
 
+class DocumentStaleError(MetadataStoreError):
+    """
+    Document không tồn tại hoặc đã bị soft-delete khi worker đang ghi.
+
+    Khác MetadataStoreError thường: đây KHÔNG phải lỗi hạ tầng — pipeline phải
+    dừng ngay và không được ghi Qdrant/chunks/outbox, để tránh hồi sinh dữ liệu
+    của document đã xóa (delete race).
+    """
+
+    def __init__(self, message: str, document_id: str | None = None) -> None:
+        super().__init__(message)
+        self.document_id = document_id
+
+
 class GraphStoreError(ChunkingError):
     """Lỗi khi tương tác với graph database (Neo4j)."""
 
@@ -113,6 +127,7 @@ __all__ = [
     "VectorStoreError",
     "FileStorageError",
     "MetadataStoreError",
+    "DocumentStaleError",
     "GraphStoreError",
     "LLMError",
     "ProcessingError",

@@ -7,7 +7,7 @@ from document_chunk.adapters.metadata.postgres_repository_utils import (
     PostgresRepositoryBase,
 )
 from document_chunk.domain.entities.document import Document, DocumentType
-from document_chunk.domain.exceptions import MetadataStoreError
+from document_chunk.domain.exceptions import DocumentStaleError, MetadataStoreError
 from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     DocumentFilter,
@@ -15,10 +15,12 @@ from document_chunk.domain.ports.metadata_store import (
     IngestionStatus,
     StoredDocumentContext,
 )
+from document_chunk.shared.logger import get_logger
 from document_chunk.shared.result import Err, Ok, Result
 from document_chunk.shared.tracing import get_tracer
 
 tracer = get_tracer(__name__)
+logger = get_logger(__name__)
 
 
 class PostgresDocumentRepository(PostgresRepositoryBase):
@@ -90,13 +92,32 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
                     cur.execute(
                         """
                         UPDATE documents
-                        SET status = %s,
-                            deleted_at = NULL
-                        WHERE document_id = %s::uuid;
+                        SET status = %s
+                        WHERE document_id = %s::uuid
+                          AND deleted_at IS NULL;
                         """,
                         (status.value, document_id),
                     )
+                    affected = cur.rowcount
+                if affected == 0:
+                    # Document missing or soft-deleted → worker must stop and
+                    # must NOT write derived data (delete race guard).
+                    return Err(
+                        DocumentStaleError(
+                            f"document {document_id} not found or deleted",
+                            document_id=document_id,
+                        )
+                    )
                 conn.commit()
+            if error_msg:
+                # documents table has no error column in this phase; log the
+                # error so it is not silently dropped (see plan Phase 0).
+                logger.error(
+                    "document.status.error",
+                    document_id=document_id,
+                    status=status.value,
+                    error=error_msg,
+                )
             return Ok(None)
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))

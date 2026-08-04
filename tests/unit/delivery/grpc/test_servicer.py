@@ -1,3 +1,4 @@
+import grpc
 from unittest.mock import MagicMock
 
 from document_chunk.application.dto.generation_dto import (
@@ -27,6 +28,16 @@ from document_chunk.shared.result import Ok
 class _FakeContext:
     def abort(self, code, message):
         raise AssertionError(f"unexpected grpc abort: {code} {message}")
+
+
+class _RecordingContext:
+    """Records grpc abort calls instead of raising — for legacy-blocked tests."""
+
+    def __init__(self) -> None:
+        self.aborted: tuple[object, str] | None = None
+
+    def abort(self, code, message) -> None:
+        self.aborted = (code, message)
 
 
 class TestChunkingServicer:
@@ -212,7 +223,7 @@ class TestChunkingServicer:
         assert response.questions[0].question_id == "quiz-001"
         assert response.questions[0].correct_index == 0
 
-    def test_delete_document_uses_delete_use_case(self):
+    def test_delete_document_is_legacy_blocked(self):
         (
             servicer,
             _process_use_case,
@@ -223,22 +234,17 @@ class TestChunkingServicer:
             _cards_use_case,
             _quiz_use_case,
         ) = self._build_servicer()
-        delete_use_case.execute.return_value = Ok(
-            DeleteDocumentResponse(
-                document_id="doc-001",
-                success=True,
-                message="Delete scheduled for document doc-001",
-            )
-        )
 
-        response = servicer.DeleteDocument(
+        context = _RecordingContext()
+        servicer.DeleteDocument(
             chunking_pb2.DeleteDocumentRequest(document_id="doc-001"),
-            _FakeContext(),
+            context,
         )
 
-        assert response.success is True
-        assert response.message == "Delete scheduled for document doc-001"
-        delete_use_case.execute.assert_called_once()
+        code, message = context.aborted
+        assert code == grpc.StatusCode.UNIMPLEMENTED
+        assert "Core API" in message
+        delete_use_case.execute.assert_not_called()
 
     def test_get_curriculum_uses_injected_metadata_store(self):
         metadata_store = MagicMock()
@@ -289,21 +295,14 @@ class TestChunkingServicer:
         assert response.learning_outcomes[0].lo_id == "lo-001"
         assert response.assessments[0].assessment_id == "assessment-001"
 
-    def test_generate_curriculum_quiz_maps_shared_request_dto(self):
+    def test_generate_curriculum_quiz_is_legacy_blocked(self):
         generate_use_case = MagicMock()
-        generate_use_case.execute.return_value = Ok(
-            GenerateCurriculumQuizResponse(
-                course_id="course-001",
-                lo_id="lo-001",
-                quiz_count=1,
-                question_ids=["question-001"],
-            )
-        )
         servicer, *_ = self._build_servicer(
             generate_curriculum_quiz_use_case=generate_use_case
         )
 
-        response = servicer.GenerateCurriculumQuiz(
+        context = _RecordingContext()
+        servicer.GenerateCurriculumQuiz(
             chunking_pb2.GenerateCurriculumQuizRequest(
                 course_id="course-001",
                 target_kind="lo",
@@ -312,15 +311,42 @@ class TestChunkingServicer:
                 bloom_level="apply",
                 count=3,
             ),
-            _FakeContext(),
+            context,
         )
 
-        dto = generate_use_case.execute.call_args.args[0]
-        assert isinstance(dto, GenerateCurriculumQuizRequest)
-        assert dto.course_id == "course-001"
-        assert dto.target_kind == "lo"
-        assert dto.style == "midterm"
-        assert dto.bloom_level == "apply"
-        assert dto.count == 3
-        assert response.questions[0].question_id == "question-001"
-        assert response.questions[0].lo_id == "lo-001"
+        code, message = context.aborted
+        assert code == grpc.StatusCode.UNIMPLEMENTED
+        assert "Core API" in message
+        generate_use_case.execute.assert_not_called()
+
+    def test_process_and_enqueue_and_ingest_are_legacy_blocked(self):
+        servicer, process_uc, _search_uc, enqueue_uc, _delete_uc, *_ = self._build_servicer()
+
+        for call in (
+            lambda ctx: servicer.ProcessDocument(
+                chunking_pb2.ProcessDocumentRequest(
+                    file_data=b"pdf-bytes", file_name="a.pdf", document_id="doc-001"
+                ),
+                ctx,
+            ),
+            lambda ctx: servicer.EnqueueDocument(
+                chunking_pb2.ProcessDocumentRequest(
+                    file_data=b"pdf-bytes", file_name="a.pdf", document_id="doc-001"
+                ),
+                ctx,
+            ),
+            lambda ctx: servicer.IngestCurriculum(
+                chunking_pb2.IngestCurriculumRequest(
+                    file_data=b"xls", file_name="curriculum.xlsx", course_id="course-001"
+                ),
+                ctx,
+            ),
+        ):
+            context = _RecordingContext()
+            call(context)
+            code, message = context.aborted
+            assert code == grpc.StatusCode.UNIMPLEMENTED
+            assert "Core API" in message
+
+        process_uc.execute.assert_not_called()
+        enqueue_uc.execute.assert_not_called()
