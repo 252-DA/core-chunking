@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from pydantic import BaseModel
 
 from document_chunk.domain.ports.metadata_store import IngestionStatus
@@ -45,3 +47,21 @@ class QuizResponse(BaseModel):
     document_id: str
     questions: list[QuizQuestionItem]
     total_questions: int
+
+
+@dataclass
+class GenerateCurriculumQuizRequest:
+    course_id: str
+    target_kind: str
+    target_code: str
+    style: str = "quiz"
+    bloom_level: str | None = None
+    count: int = 5
+
+
+@dataclass
+class GenerateCurriculumQuizResponse:
+    course_id: str
+    lo_id: str
+    quiz_count: int
+    question_ids: list[str]

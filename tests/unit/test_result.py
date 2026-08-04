@@ -13,6 +13,10 @@ class TestOk:
     def test_is_err_false(self):
         assert Ok(42).is_err() is False
 
+    def test_error_access_still_fails(self):
+        with pytest.raises(AttributeError, match="Ok has no error"):
+            _ = Ok(42).error
+
     def test_unwrap_returns_value(self):
         assert Ok("hello").unwrap() == "hello"
 

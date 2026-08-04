@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Generic, TypeVar, Union
+from typing import Callable, Generic, Literal, NoReturn, TypeVar, Union
 
 T = TypeVar("T")
 E = TypeVar("E", bound=Exception)
@@ -10,11 +10,17 @@ U = TypeVar("U")
 class Ok(Generic[T]):
     value: T
 
-    def is_ok(self) -> bool:
+    def is_ok(self) -> Literal[True]:
         return True
 
-    def is_err(self) -> bool:
+    def is_err(self) -> Literal[False]:
         return False
+
+    @property
+    def error(self) -> NoReturn:
+        """Keep ``Result.error`` type-safe while preserving invalid access failure."""
+
+        raise AttributeError("Ok has no error")
 
     def unwrap(self) -> T:
         return self.value
@@ -33,13 +39,13 @@ class Ok(Generic[T]):
 class Err(Generic[E]):
     error: E
 
-    def is_ok(self) -> bool:
+    def is_ok(self) -> Literal[False]:
         return False
 
-    def is_err(self) -> bool:
+    def is_err(self) -> Literal[True]:
         return True
 
-    def unwrap(self) -> None:
+    def unwrap(self) -> NoReturn:
         raise self.error
 
     def unwrap_or(self, default: T) -> T:

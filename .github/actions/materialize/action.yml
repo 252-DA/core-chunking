@@ -1,0 +1,22 @@
+name: Materialize Document Chunk Pipeline
+description: Copy this pinned package revision into a consumer workflow workspace
+
+inputs:
+  path:
+    description: Destination path relative to the workflow workspace
+    required: false
+    default: packages-ai
+
+runs:
+  using: composite
+  steps:
+    - name: Copy package source
+      shell: bash
+      env:
+        PACKAGES_AI_DESTINATION: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        repository_root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd)"
+        mkdir -p "$PACKAGES_AI_DESTINATION"
+        cp -a "$repository_root/." "$PACKAGES_AI_DESTINATION/"
+        test -f "$PACKAGES_AI_DESTINATION/pyproject.toml"

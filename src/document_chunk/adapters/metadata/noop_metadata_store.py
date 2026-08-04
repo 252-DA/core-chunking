@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from document_chunk.domain.entities.document import Document
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     DocumentFilter,
     DocumentSummary,
     IMetadataStore,
     IngestionStatus,
-    OutboxEvent,
     StoredAssessment,
     StoredChapter,
     StoredChunkConcept,
@@ -50,7 +50,7 @@ class NoopMetadataStore(IMetadataStore):
     def upsert_chunks_with_outbox(
         self,
         chunks: list[StoredChunkMetadata],
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
@@ -81,12 +81,20 @@ class NoopMetadataStore(IMetadataStore):
         quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
-        outbox_event_type: str | None = None,
+        outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
         if outbox_event_type is None:
             return Ok(None)
         return Ok("noop-event")
+
+    def persist_curriculum_quiz_items(
+        self,
+        lo_id: str,
+        bloom_level: str | int | None,
+        quiz_items: list[StoredQuizItem],
+    ) -> Result[None, Exception]:
+        return Ok(None)
 
     def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
         return Ok([])
@@ -96,20 +104,11 @@ class NoopMetadataStore(IMetadataStore):
 
     def append_outbox_event(
         self,
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
         return Ok("noop-event")
-
-    def fetch_pending_outbox(self, limit: int = 100) -> Result[list[OutboxEvent], Exception]:
-        return Ok([])
-
-    def mark_outbox_done(self, event_id: str) -> Result[None, Exception]:
-        return Ok(None)
-
-    def mark_outbox_failed(self, event_id: str, error_msg: str) -> Result[None, Exception]:
-        return Ok(None)
 
     def get(self, document_id: str) -> Result[Document | None, Exception]:
         return Ok(None)
@@ -168,6 +167,15 @@ class NoopMetadataStore(IMetadataStore):
         self, lo_id: str
     ) -> Result[list[StoredChunkMetadata], Exception]:
         return Ok([])
+
+    def update_content_generation_request(
+        self,
+        request_id: str,
+        status: str,
+        generated_count: int | None = None,
+        last_error: str | None = None,
+    ) -> Result[None, Exception]:
+        return Ok(None)
 
     # ------------------------------------------------------------------
     # LMS / web admin methods

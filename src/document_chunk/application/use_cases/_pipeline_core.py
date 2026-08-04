@@ -13,7 +13,12 @@ from dataclasses import dataclass
 
 from document_chunk.domain.entities.chunk import Chunk
 from document_chunk.domain.entities.document import Document, DocumentType
-from document_chunk.domain.exceptions import ProcessingError, UnsupportedFileTypeError
+from document_chunk.domain.exceptions import (
+    DocumentStaleError,
+    ProcessingError,
+    UnsupportedFileTypeError,
+)
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.chunker import IChunker
 from document_chunk.domain.ports.embedder import IEmbedder
 from document_chunk.domain.ports.graph_store import GraphChunk
@@ -37,9 +42,6 @@ from document_chunk.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
-
-_EVENT_HEADING_GRAPH_PROJECT = "heading_graph_project"
-
 
 @dataclass
 class PipelineCoreResult:
@@ -200,7 +202,7 @@ class PipelineCore:
             graph_chunks = self._build_graph_chunks(chunks)
             outbox_result = self._metadata_store.upsert_chunks_with_outbox(
                 chunks=self._build_chunk_metadata(chunks),
-                event_type=_EVENT_HEADING_GRAPH_PROJECT,
+                event_type=OutboxEventType.HEADING_GRAPH_PROJECT,
                 aggregate_id=document_id,
                 payload={
                     "document_id": document_id,
@@ -281,6 +283,15 @@ class PipelineCore:
     def _fail(
         self, document_id: str, doc_type: DocumentType, error: Exception
     ) -> Result[PipelineCoreResult, Exception]:
+        if isinstance(error, DocumentStaleError):
+            # Document bị xóa giữa chừng — không ghi ERROR status (vô ích),
+            # không đếm failed metric (không phải lỗi pipeline), chỉ dừng.
+            logger.warning(
+                "pipeline.document_stale",
+                document_id=document_id,
+                error=str(error),
+            )
+            return Err(error)
         DOCUMENTS_PROCESSED.labels(status="failed", doc_type=doc_type.value).inc()
         self._metadata_store.update_document_status(
             document_id=document_id,

@@ -52,7 +52,7 @@ QUEUED → PARSING → CHUNKING → EMBEDDING → UPSERTING → DONE
 | PARSING | Docling (PDF), python-docx, python-pptx, markdown parser → text + heading structure | ParsedDocument |
 | CHUNKING | Heading-aware chunker — split theo heading hierarchy | chunks[] |
 | EMBEDDING | BGE-M3 1024-dim encode | vectors[] |
-| UPSERTING | Upsert Qdrant + insert chunk metadata SQL + append `heading_graph_project` outbox event | Qdrant points, SQL rows, outbox event |
+| UPSERTING | Upsert Qdrant + insert chunk metadata SQL + append `HEADING_GRAPH_PROJECT` outbox event | Qdrant points, SQL rows, outbox event |
 
 **Khi DONE**: document đã searchable ngay (Qdrant có vectors). Heading graph sẽ được project bất đồng bộ bởi Outbox Worker.
 
@@ -70,7 +70,7 @@ DONE → ENRICHING → ENRICHED
 
 | Stage | Mô tả | Output |
 |---|---|---|
-| ENRICHING | Concept extraction (heading → concept) → canonicalize → SQL upsert concepts/mentions → append `concept_graph_project` outbox event | concepts[], chunk_concepts[], outbox event |
+| ENRICHING | Concept extraction (heading → concept) → canonicalize → SQL upsert concepts/mentions → append `CONCEPT_GRAPH_PROJECT` outbox event | concepts[], chunk_concepts[], outbox event |
 
 **Phase 1 (implemented)**: Heading = Concept (deterministic, zero LLM cost).
 **Phase 2 (planned)**: LLM 1-call extraction khi Phase 1 không đủ.
@@ -84,18 +84,23 @@ DONE → ENRICHING → ENRICHED
 
 **Nếu enrichment fail**: status giữ `DONE`, log error, retry later. **Không bao giờ về ERROR** — user đã search được rồi.
 
-### 4.3 Outbox Worker (implemented — polling service)
+### 4.3 Core Outbox Relay + Outbox Worker
 
 ```
-Poll outbox_events WHERE status = 'PENDING'
-  → heading_graph_project  → Neo4j upsert heading graph
-  → concept_graph_project  → Neo4j upsert concept graph + status → ENRICHED
-  → document_deleted        → Qdrant delete + Neo4j DETACH DELETE
+Core API (sole DB owner): poll outbox_events WHERE status = 'PENDING'
+  → projection/lifecycle events → BullMQ queue `outbox_relay`
+  → CONTENT_GENERATION_REQUESTED → BullMQ queue `content_generation`
+
+Outbox Worker (BullMQ consumer, không đọc/ghi bảng outbox):
+  → HEADING_GRAPH_PROJECT  → Neo4j upsert heading graph
+  → CONCEPT_GRAPH_PROJECT  → Neo4j upsert concept graph + status → ENRICHED
+  → DOCUMENT_DELETED       → Qdrant delete + Neo4j DETACH DELETE
 ```
 
-Outbox Worker đảm bảo eventual consistency giữa SQL (source of truth) và derived stores (Qdrant, Neo4j).
+Core API sở hữu claim/status của outbox; Outbox Worker sở hữu side effect lên derived stores.
+BullMQ cung cấp retry cho consumer và đảm bảo event đã relay không phụ thuộc vòng poll PostgreSQL nữa.
 
-**Guard**: trước khi project, check `_ensure_document_still_exists()` — nếu document đã bị xóa, skip event và mark done.
+**Guard**: trước khi project, check `_ensure_document_still_exists()` — nếu document đã bị xóa thì bỏ qua projection cũ.
 
 ### 4.4 Deployment
 
@@ -167,15 +172,16 @@ chunks_metadata(
 );
 
 outbox_events(
-    id UUID PK,
-    event_type TEXT NOT NULL,        -- heading_graph_project | concept_graph_project | document_deleted
-    aggregate_id TEXT NOT NULL,      -- document_id
-    payload_json JSONB NOT NULL,
-    status TEXT DEFAULT 'PENDING',   -- PENDING | DONE | FAILED
-    attempts INT DEFAULT 0,
-    error_msg TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    event_id UUID PK,
+    event_type VARCHAR(100) NOT NULL,
+    aggregate_type VARCHAR(50),
+    aggregate_id UUID,
+    payload JSONB NOT NULL,
+    status VARCHAR(50) DEFAULT 'PENDING',
+    retry_count INT DEFAULT 0,
+    last_error TEXT,
+    occurred_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ
 );
 ```
 
@@ -302,7 +308,7 @@ Heading structure đã có → mỗi heading là 1 topic/concept. Không cần N
 - Normalize: clean whitespace → lowercase → slugify (handle Vietnamese đ/Đ)
 - Dedup: `concepts_by_id[slug]` — cùng slug = cùng concept
 - Upsert `concepts` + `chunk_concepts` vào SQL
-- Append `concept_graph_project` outbox event → Outbox Worker project sang Neo4j
+- Append `CONCEPT_GRAPH_PROJECT` outbox event → Core relay → Outbox Worker project sang Neo4j
 
 Khi nào đủ: RAG search cơ bản, quiz generation theo chương/mục, prerequisite mapping manual.
 Khi nào không đủ: heading quá chung (ví dụ "Chapter 1") hoặc 1 chunk chứa nhiều concepts không phản ánh trong heading.
@@ -388,19 +394,24 @@ Use case: query về "đạo hàm" → kéo thêm chunks khác cũng MENTIONS co
 ## 9. Đồng bộ dữ liệu an toàn (Outbox Pattern) — implemented
 
 1. Trong cùng transaction SQL: ghi dữ liệu business + ghi `outbox_events`.
-2. Outbox Worker poll events `status=PENDING`, push update sang Qdrant/Neo4j.
-3. Đánh dấu event `DONE` khi derived stores cập nhật thành công.
-4. Nếu lỗi: `mark_outbox_failed()` tăng `attempts`, giữ `PENDING` để retry. Khi `attempts >= max_attempts` → chuyển `FAILED`.
+2. Core API là owner duy nhất poll/claim event `PENDING` và relay sang BullMQ.
+3. Core API cập nhật trạng thái relay trong `outbox_events`; Python metadata store không có API poll/ack.
+4. Outbox Worker consume `outbox_relay`; nếu side effect lỗi thì BullMQ retry job.
 
 **Event types:**
 
-| Event | Trigger | Outbox Worker action |
+| Event | Trigger | Relay/consumer action |
 |---|---|---|
-| `heading_graph_project` | PipelineCore sau UPSERTING | Project Document/Chunk/Heading/NEXT sang Neo4j |
-| `concept_graph_project` | RunEnrichmentUseCase sau upsert concepts | Project Concept nodes + MENTIONS edges sang Neo4j, set status → ENRICHED |
-| `document_deleted` | DeleteDocumentUseCase | Xóa Qdrant points + Neo4j DETACH DELETE |
+| `HEADING_GRAPH_PROJECT` | PipelineCore sau UPSERTING | Project Document/Chunk/Heading/NEXT sang Neo4j |
+| `CONCEPT_GRAPH_PROJECT` | RunEnrichmentUseCase sau upsert concepts | Project Concept nodes + MENTIONS edges sang Neo4j, set status → ENRICHED |
+| `DOCUMENT_DELETED` | DeleteDocumentUseCase | Xóa Qdrant points + Neo4j DETACH DELETE |
+| `CONTENT_GENERATION_REQUESTED` | Core content-generation request | Relay thẳng sang `content_generation` worker |
+| `LESSON_PUBLISHED` | Core lesson publish | Relay sang `outbox_relay`; hiện là explicit no-op dành cho subscriber tương lai |
 
-**Guard logic**: Outbox Worker check `_ensure_document_still_exists()` trước khi project heading/concept. Nếu document đã bị xóa (race condition), skip event và mark done — tránh project orphan data.
+Wire values canonical nằm trong `document_chunk.domain.outbox_events.OutboxEventType`.
+Consumer vẫn normalize các giá trị lowercase cũ để xử lý event tồn đọng trước migration.
+
+**Guard logic**: Outbox Worker check `_ensure_document_still_exists()` trước khi project heading/concept. Nếu document đã bị xóa (race condition), skip event — tránh project orphan data.
 
 ## 10. Xóa Document (DeleteDocument) — implemented
 
@@ -409,21 +420,20 @@ Xóa đồng bộ cả 3 stores, **outbox event trong cùng transaction với DE
 ```
 BEGIN TRANSACTION
   1. DELETE FROM outbox_events WHERE aggregate_id = doc_id   -- cancel pending projections
-  2. INSERT outbox_events (event_type='document_deleted')     -- schedule derived store cleanup
+  2. INSERT outbox_events (event_type='DOCUMENT_DELETED')     -- schedule derived store cleanup
   3. DELETE FROM chunks_metadata WHERE document_id = doc_id
   4. DELETE FROM documents_metadata WHERE document_id = doc_id
 COMMIT
 
-5. Outbox Worker picks up 'document_deleted' event:
+5. Core relay `DOCUMENT_DELETED`; Outbox Worker consume job:
    - Qdrant: vector_store.delete_by_document(doc_id)
    - Neo4j: graph_store.delete_document(doc_id) → DETACH DELETE Document + Chunks + Headings
-   - Mark outbox DONE
 ```
 
 **Flow**:
 - `DeleteDocumentUseCase` chỉ gọi `metadata_store.delete()` — tất cả logic nằm trong 1 SQL transaction.
-- Nếu app crash giữa chừng: outbox event đã commit → Outbox Worker sẽ retry cleanup Qdrant/Neo4j.
-- Nếu Qdrant delete thành công nhưng Neo4j fail → outbox giữ PENDING, retry lần sau (Qdrant delete idempotent).
+- Nếu Core API crash trước relay: outbox event đã commit và vẫn được vòng poll tiếp theo xử lý.
+- Nếu Qdrant delete thành công nhưng Neo4j fail: BullMQ retry job; Qdrant delete là idempotent.
 
 ## 11. Quiz Generation Pipeline (planned — core of v1 thesis)
 
@@ -526,9 +536,10 @@ Embed → Upsert Qdrant → Core Pipeline bình thường
 - [x] Concept extraction Phase 1: Heading = Concept (deterministic, zero LLM)
 - [x] SQL schema: `concepts`, `chunk_concepts` tables
 - [x] Neo4j adapter: `upsert_concept_graph()` — Concept nodes + MENTIONS edges
-- [x] Outbox Worker: polling service xử lý `heading_graph_project`, `concept_graph_project`, `document_deleted`
+- [x] Core API: owner duy nhất poll/claim bảng outbox và relay sang BullMQ
+- [x] Outbox Worker: BullMQ consumer xử lý `HEADING_GRAPH_PROJECT`, `CONCEPT_GRAPH_PROJECT`, `DOCUMENT_DELETED`
 - [x] Outbox Worker guard: `_ensure_document_still_exists()` trước khi project
-- [x] DeleteDocument: outbox-first pattern — cancel pending events + append `document_deleted` + delete SQL trong cùng transaction
+- [x] DeleteDocument: outbox-first pattern — cancel pending events + append `DOCUMENT_DELETED` + delete SQL trong cùng transaction
 - [x] Outbox Worker delete: Qdrant `delete_by_document()` + Neo4j `DETACH DELETE`
 - [x] Neo4j `delete_document()` method
 

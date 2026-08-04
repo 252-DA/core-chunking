@@ -31,7 +31,7 @@ RUN uv sync --frozen --no-dev --extra embeddings --extra llamaindex --no-install
 COPY src/ src/
 COPY examples/ examples/
 
-EXPOSE 50051 8000
+EXPOSE 50051 8000 8001
 
 ENTRYPOINT ["python", "-m"]
 CMD ["document_chunk.delivery.grpc.server"]

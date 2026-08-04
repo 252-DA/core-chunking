@@ -2,12 +2,12 @@ from datetime import datetime, timezone
 
 from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
 from document_chunk.domain.entities.document import DocumentType
-from document_chunk.infrastructure.config import OutboxConfig, SqlConfig
+from document_chunk.infrastructure.config import SqlConfig
 
 
 class TestDocumentMapping:
     def test_row_to_document_reconstructs_without_fake_path(self):
-        store = PostgresMetadataStore(SqlConfig(enabled=True), OutboxConfig())
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
 
         document = store._row_to_document(
             (

@@ -8,13 +8,17 @@ from document_chunk.domain.ports.graph_store import (
     GraphDocument,
     IGraphStore,
 )
-from document_chunk.domain.ports.job_queue import DocumentJobPayload, EnrichmentJobPayload, IJobQueue
+from document_chunk.domain.ports.job_queue import (
+    OUTBOX_RELAY_QUEUE_NAME,
+    DocumentJobPayload,
+    EnrichmentJobPayload,
+    IJobQueue,
+)
 from document_chunk.domain.ports.llm_client import ILLMClient
 from document_chunk.domain.ports.metadata_store import (
     DocumentFilter,
     IMetadataStore,
     IngestionStatus,
-    OutboxEvent,
     StoredChunkConcept,
     StoredChunkMetadata,
     StoredConcept,
@@ -43,7 +47,6 @@ __all__ = [
     "StoredChunkConcept",
     "StoredLessonCard",
     "StoredQuizItem",
-    "OutboxEvent",
     "IngestionStatus",
     "GraphChunk",
     "GraphDocument",
@@ -52,4 +55,5 @@ __all__ = [
     "IJobQueue",
     "DocumentJobPayload",
     "EnrichmentJobPayload",
+    "OUTBOX_RELAY_QUEUE_NAME",
 ]

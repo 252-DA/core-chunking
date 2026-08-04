@@ -33,6 +33,14 @@ class HttpConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="HTTP_")
 
 
+class McpConfig(BaseSettings):
+    host: str = "0.0.0.0"
+    port: int = 8001
+    path: str = "/mcp"
+
+    model_config = SettingsConfigDict(env_prefix="MCP_")
+
+
 class QdrantConfig(BaseSettings):
     host: str = "localhost"
     port: int = 6333
@@ -79,15 +87,6 @@ class RedisConfig(BaseSettings):
     db: int = 0
 
     model_config = SettingsConfigDict(env_prefix="REDIS_")
-
-
-class OutboxConfig(BaseSettings):
-    enabled: bool = True
-    poll_interval_seconds: int = 5
-    batch_size: int = 100
-    max_attempts: int = 10
-
-    model_config = SettingsConfigDict(env_prefix="OUTBOX_")
 
 
 class ParserConfig(BaseSettings):
@@ -153,11 +152,13 @@ class EmbedderConfig(BaseSettings):
 
 
 class LlmConfig(BaseSettings):
-    provider: Literal["gemini"] = "gemini"
+    provider: Literal["gemini", "openai-compatible", "deepseek"] = "gemini"
     model: str = "gemini-2.0-flash"
     api_key: str | None = None
+    base_url: str | None = None
     temperature: float = 0.2
     timeout_seconds: int = 60
+    max_retries: int = 2
     max_section_chars: int = 6000
 
     model_config = SettingsConfigDict(env_prefix="LLM_")
@@ -186,12 +187,12 @@ class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
     grpc: GrpcConfig = Field(default_factory=GrpcConfig)
     http: HttpConfig = Field(default_factory=HttpConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     minio: MinioConfig = Field(default_factory=MinioConfig)
     sql: SqlConfig = Field(default_factory=SqlConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     redis: RedisConfig = Field(default_factory=RedisConfig)
-    outbox: OutboxConfig = Field(default_factory=OutboxConfig)
     parser: ParserConfig = Field(default_factory=ParserConfig)
     chunker: ChunkerConfig = Field(default_factory=ChunkerConfig)
     llamaindex_chunker: LlamaIndexChunkerConfig = Field(default_factory=LlamaIndexChunkerConfig)

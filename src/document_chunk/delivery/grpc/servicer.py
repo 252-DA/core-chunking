@@ -9,31 +9,24 @@ File transfer:
   Client sends file_data (bytes) in the request.
   Servicer writes to a temp file → passes path to use case → deletes temp file.
 """
-import tempfile
-from pathlib import Path
+from typing import Protocol
 
 import grpc
 
-from document_chunk.application.dto.document_dto import ProcessDocumentRequest
+from document_chunk.application.dto.generation_dto import (
+    GenerateCurriculumQuizRequest,
+    GenerateCurriculumQuizResponse,
+)
 from document_chunk.application.dto.search_dto import SearchRequest
-from document_chunk.application.use_cases.delete_document import (
-    DeleteDocumentRequest,
-    DeleteDocumentUseCase,
-)
-from document_chunk.application.use_cases.enqueue_document import (
-    EnqueueDocumentRequest,
-    EnqueueDocumentUseCase,
-)
+from document_chunk.application.use_cases.delete_document import DeleteDocumentUseCase
+from document_chunk.application.use_cases.enqueue_document import EnqueueDocumentUseCase
 from document_chunk.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
 from document_chunk.application.use_cases.get_document_status import (
     GetDocumentStatusRequest,
     GetDocumentStatusUseCase,
 )
 from document_chunk.application.use_cases.get_quiz import GetQuizRequest, GetQuizUseCase
-from document_chunk.application.use_cases.ingest_curriculum import (
-    IngestCurriculumRequest,
-    IngestCurriculumUseCase,
-)
+from document_chunk.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
 from document_chunk.application.use_cases.process_document import ProcessDocumentUseCase
 from document_chunk.application.use_cases.search_by_learning_outcome import (
     SearchByLearningOutcomeRequest,
@@ -42,13 +35,22 @@ from document_chunk.application.use_cases.search_by_learning_outcome import (
 from document_chunk.application.use_cases.search_chunks import SearchChunksUseCase
 from document_chunk.delivery.grpc.proto import chunking_pb2, chunking_pb2_grpc
 from document_chunk.domain.entities.document import DocumentType
+from document_chunk.domain.ports.metadata_store import IMetadataStore
 from document_chunk.shared.logger import get_logger
+from document_chunk.shared.result import Result
 from document_chunk.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
 _VERSION = "1.0.0"
+
+
+class GenerateCurriculumQuizExecutor(Protocol):
+    def execute(
+        self,
+        request: GenerateCurriculumQuizRequest,
+    ) -> Result[GenerateCurriculumQuizResponse, Exception]: ...
 
 
 class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
@@ -63,7 +65,8 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         get_quiz_use_case: GetQuizUseCase,
         ingest_curriculum_use_case: IngestCurriculumUseCase | None = None,
         search_by_lo_use_case: SearchByLearningOutcomeUseCase | None = None,
-        generate_curriculum_quiz_use_case=None,
+        generate_curriculum_quiz_use_case: GenerateCurriculumQuizExecutor | None = None,
+        metadata_store: IMetadataStore | None = None,
     ) -> None:
         self._process = process_use_case
         self._search = search_use_case
@@ -75,6 +78,7 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         self._ingest_curriculum = ingest_curriculum_use_case
         self._search_by_lo = search_by_lo_use_case
         self._generate_curriculum_quiz = generate_curriculum_quiz_use_case
+        self._metadata_store = metadata_store
 
     # ------------------------------------------------------------------
     # ProcessDocument (sync)
@@ -85,73 +89,16 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         request: chunking_pb2.ProcessDocumentRequest,
         context: grpc.ServicerContext,
     ) -> chunking_pb2.ProcessDocumentResponse:
-        with tracer.start_as_current_span("grpc.ProcessDocument"):
-            if not request.file_data:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
-            if not request.file_name:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_name is required")
-
-            logger.info(
-                "grpc.ProcessDocument.received",
-                file_name=request.file_name,
-                size_bytes=len(request.file_data),
-            )
-
-            suffix = Path(request.file_name).suffix or ".tmp"
-            tmp_path: Path | None = None
-            result = None
-
-            try:
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp.write(request.file_data)
-                    tmp_path = Path(tmp.name)
-
-                dto = ProcessDocumentRequest(
-                    file_path=tmp_path,
-                    document_id=request.document_id or None,
-                    original_file_name=request.file_name or None,
-                    language=request.language or None,
-                    metadata=dict(request.metadata),
-                )
-
-                result = self._process.execute(dto)
-
-            except Exception as e:
-                logger.error("grpc.ProcessDocument.exception", error=str(e))
-                context.abort(grpc.StatusCode.INTERNAL, str(e))
-
-            finally:
-                if tmp_path and tmp_path.exists():
-                    tmp_path.unlink()
-
-            if result is None:
-                return
-
-            if result.is_err():
-                err_msg = str(result.error)
-                logger.error("grpc.ProcessDocument.failed", error=err_msg)
-                context.abort(grpc.StatusCode.INTERNAL, err_msg)
-
-            resp = result.unwrap()
-            return chunking_pb2.ProcessDocumentResponse(
-                document_id=resp.document_id,
-                document_name=resp.document_name,
-                doc_type=resp.doc_type.value,
-                chunk_count=resp.chunk_count,
-                chunks=[
-                    chunking_pb2.ChunkSummary(
-                        chunk_id=c.chunk_id,
-                        heading_path=c.heading_path,
-                        content_preview=c.content_preview,
-                        content_length=c.content_length,
-                        page_number=c.page_number or 0,
-                        has_images=c.has_images,
-                    )
-                    for c in resp.chunks
-                ],
-                storage_key=resp.storage_key,
-                processing_time_ms=resp.processing_time_ms,
-            )
+        # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+        # Document processing now flows through the Core API workflow.
+        logger.warning(
+            "grpc.ProcessDocument.legacy_blocked",
+            document_id=request.document_id or "",
+        )
+        context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "ProcessDocument is disabled: use the Core API upload workflow instead",
+        )
 
     # ------------------------------------------------------------------
     # Search
@@ -223,26 +170,15 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         request: chunking_pb2.DeleteDocumentRequest,
         context: grpc.ServicerContext,
     ) -> chunking_pb2.DeleteDocumentResponse:
-        if not request.document_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "document_id is required")
-
-        logger.info("grpc.DeleteDocument.received", document_id=request.document_id)
-
-        result = self._delete.execute(
-            DeleteDocumentRequest(document_id=request.document_id)
+        # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+        # Document deletion now flows through the Core API workflow.
+        logger.warning(
+            "grpc.DeleteDocument.legacy_blocked",
+            document_id=request.document_id,
         )
-
-        if result.is_err():
-            return chunking_pb2.DeleteDocumentResponse(
-                success=False,
-                message=str(result.error),
-            )
-
-        logger.info("grpc.DeleteDocument.done", document_id=request.document_id)
-        response = result.unwrap()
-        return chunking_pb2.DeleteDocumentResponse(
-            success=response.success,
-            message=response.message,
+        context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "DeleteDocument is disabled: use the Core API document workflow instead",
         )
 
     # ------------------------------------------------------------------
@@ -254,59 +190,16 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         request: chunking_pb2.ProcessDocumentRequest,
         context: grpc.ServicerContext,
     ) -> chunking_pb2.EnqueueDocumentResponse:
-        with tracer.start_as_current_span("grpc.EnqueueDocument"):
-            if not request.file_data:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
-            if not request.file_name:
-                context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_name is required")
-
-            logger.info(
-                "grpc.EnqueueDocument.received",
-                file_name=request.file_name,
-                size_bytes=len(request.file_data),
-            )
-
-            suffix = Path(request.file_name).suffix or ".tmp"
-            tmp_path: Path | None = None
-            result = None
-
-            try:
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                    tmp.write(request.file_data)
-                    tmp_path = Path(tmp.name)
-
-                dto = EnqueueDocumentRequest(
-                    file_path=tmp_path,
-                    file_name=request.file_name,
-                    document_id=request.document_id or None,
-                    language=request.language or None,
-                    metadata=dict(request.metadata),
-                )
-
-                result = self._enqueue.execute(dto)
-
-            except Exception as e:
-                logger.error("grpc.EnqueueDocument.exception", error=str(e))
-                context.abort(grpc.StatusCode.INTERNAL, str(e))
-
-            finally:
-                if tmp_path and tmp_path.exists():
-                    tmp_path.unlink()
-
-            if result is None:
-                return
-
-            if result.is_err():
-                err_msg = str(result.error)
-                logger.error("grpc.EnqueueDocument.failed", error=err_msg)
-                context.abort(grpc.StatusCode.INTERNAL, err_msg)
-
-            resp = result.unwrap()
-            return chunking_pb2.EnqueueDocumentResponse(
-                document_id=resp.document_id,
-                status=resp.status,
-                job_id=resp.job_id,
-            )
+        # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+        # Document processing now flows through the Core API workflow.
+        logger.warning(
+            "grpc.EnqueueDocument.legacy_blocked",
+            document_id=request.document_id or "",
+        )
+        context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "EnqueueDocument is disabled: use the Core API upload workflow instead",
+        )
 
     # ------------------------------------------------------------------
     # GetDocumentStatus
@@ -427,60 +320,16 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         request: chunking_pb2.IngestCurriculumRequest,
         context: grpc.ServicerContext,
     ) -> chunking_pb2.IngestCurriculumResponse:
-        if not request.file_data:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_data is required")
-        if not request.file_name:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "file_name is required")
-        if not request.course_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
-        if self._ingest_curriculum is None:
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, "IngestCurriculum not configured")
-
-        logger.info(
-            "grpc.IngestCurriculum.received",
+        # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+        # Curriculum import now flows through the Core API workflow.
+        logger.warning(
+            "grpc.IngestCurriculum.legacy_blocked",
             course_id=request.course_id,
             file_name=request.file_name,
         )
-
-        suffix = Path(request.file_name).suffix or ".pdf"
-        tmp_path: Path | None = None
-        result = None
-
-        try:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(request.file_data)
-                tmp_path = Path(tmp.name)
-
-            result = self._ingest_curriculum.execute(
-                IngestCurriculumRequest(
-                    file_path=tmp_path,
-                    file_name=request.file_name,
-                    course_id=request.course_id,
-                )
-            )
-        except Exception as exc:
-            logger.error("grpc.IngestCurriculum.exception", error=str(exc))
-            context.abort(grpc.StatusCode.INTERNAL, str(exc))
-        finally:
-            if tmp_path and tmp_path.exists():
-                tmp_path.unlink()
-
-        if result is None:
-            return
-
-        if result.is_err():
-            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
-
-        resp = result.unwrap()
-        return chunking_pb2.IngestCurriculumResponse(
-            course_id=resp.course_id,
-            course_code=resp.course_code,
-            title_vi=resp.title_vi,
-            chapter_count=resp.chapter_count,
-            lo_count=resp.lo_count,
-            assessment_count=resp.assessment_count,
-            extraction_confidence=resp.extraction_confidence,
-            warnings=resp.warnings,
+        context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "IngestCurriculum is disabled: curriculum mutations go through the Core API",
         )
 
     # ------------------------------------------------------------------
@@ -494,11 +343,11 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
     ) -> chunking_pb2.GetCurriculumResponse:
         if not request.course_id:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
-        if self._ingest_curriculum is None:
+        metadata_store = self._metadata_store
+        if metadata_store is None:
             context.abort(grpc.StatusCode.UNIMPLEMENTED, "Curriculum store not configured")
+        assert metadata_store is not None
 
-        from document_chunk.domain.ports.metadata_store import IMetadataStore
-        metadata_store: IMetadataStore = self._ingest_curriculum._metadata_store  # type: ignore[attr-defined]
         result = metadata_store.get_curriculum(request.course_id)
         if result.is_err():
             context.abort(grpc.StatusCode.INTERNAL, str(result.error))
@@ -601,56 +450,17 @@ class ChunkingServicer(chunking_pb2_grpc.ChunkingServiceServicer):
         request: chunking_pb2.GenerateCurriculumQuizRequest,
         context: grpc.ServicerContext,
     ) -> chunking_pb2.GetQuizResponse:
-        if not request.course_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "course_id is required")
-        if not request.target_kind:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_kind is required")
-        if not request.target_code:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "target_code is required")
-        if self._generate_curriculum_quiz is None:
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, "GenerateCurriculumQuiz not configured")
-
-        logger.info(
-            "grpc.GenerateCurriculumQuiz.received",
+        # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+        # Quiz generation now flows through the Core API workflow.
+        logger.warning(
+            "grpc.GenerateCurriculumQuiz.legacy_blocked",
             course_id=request.course_id,
             target_kind=request.target_kind,
             target_code=request.target_code,
         )
-
-        from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizRequest as WRequest
-
-        result = self._generate_curriculum_quiz.execute(
-            WRequest(
-                course_id=request.course_id,
-                target_kind=request.target_kind,
-                target_code=request.target_code,
-                style=request.style or "quiz",
-                bloom_level=request.bloom_level or None,
-                count=request.count or 5,
-            )
-        )
-
-        if result.is_err():
-            context.abort(grpc.StatusCode.INTERNAL, str(result.error))
-
-        resp = result.unwrap()
-        # Return GetQuizResponse with basic quiz items
-        return chunking_pb2.GetQuizResponse(
-            document_id=f"_curriculum_{resp.course_id}",
-            questions=[
-                chunking_pb2.QuizItem(
-                    question_id=qid,
-                    chunk_id="",
-                    question="",
-                    choices=[],
-                    correct_index=0,
-                    explanation="",
-                    difficulty="medium",
-                    lo_id=resp.lo_id,
-                )
-                for qid in resp.question_ids
-            ],
-            total_questions=resp.quiz_count,
+        context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "GenerateCurriculumQuiz is disabled: use the Core API content-generation workflow",
         )
 
     # ------------------------------------------------------------------

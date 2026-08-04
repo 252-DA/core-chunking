@@ -1,5 +1,6 @@
 from document_chunk.application.dto.document_dto import ProcessDocumentRequest
 from document_chunk.application.use_cases.process_document import ProcessDocumentUseCase
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.shared.result import Err
 
 
@@ -41,7 +42,7 @@ class TestProcessDocumentUseCase:
         assert payload.document_id == sample_document.id
         mock_metadata_store.upsert_chunks_with_outbox.assert_called_once()
         _, outbox_kwargs = mock_metadata_store.upsert_chunks_with_outbox.call_args
-        assert outbox_kwargs["event_type"] == "heading_graph_project"
+        assert outbox_kwargs["event_type"] is OutboxEventType.HEADING_GRAPH_PROJECT
         assert outbox_kwargs["aggregate_id"] == sample_document.id
         assert outbox_kwargs["payload"]["document_name"] == sample_document.name
         assert outbox_kwargs["payload"]["doc_type"] == sample_document.doc_type.value
@@ -56,8 +57,6 @@ class TestProcessDocumentUseCase:
         ]
         mock_metadata_store.upsert_chunks.assert_not_called()
         mock_metadata_store.append_outbox_event.assert_not_called()
-        mock_metadata_store.mark_outbox_done.assert_not_called()
-        mock_metadata_store.mark_outbox_failed.assert_not_called()
 
     def test_enrichment_enqueue_failure_does_not_fail_processing(
         self,

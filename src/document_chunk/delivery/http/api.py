@@ -16,13 +16,10 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, sta
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from document_chunk.application.dto.document_dto import ProcessDocumentRequest, ProcessDocumentResponse
+from document_chunk.application.dto.document_dto import ProcessDocumentResponse
 from document_chunk.application.dto.generation_dto import CardsResponse, DocumentStatusResponse, QuizResponse
 from document_chunk.application.dto.search_dto import SearchRequest, SearchResponse
-from document_chunk.application.use_cases.delete_document import (
-    DeleteDocumentRequest,
-    DeleteDocumentUseCase,
-)
+from document_chunk.application.use_cases.delete_document import DeleteDocumentUseCase
 from document_chunk.application.use_cases.get_cards import GetCardsRequest, GetCardsUseCase
 from document_chunk.application.use_cases.get_document_status import (
     GetDocumentStatusRequest,
@@ -658,52 +655,14 @@ async def process_document(
     ] = None,
     use_case: ProcessDocumentUseCase = Depends(_get_process_use_case),
 ) -> ProcessDocumentResponse:
-    original_file_name = _normalize_optional(file.filename)
-    if original_file_name is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="file name is required",
-        )
-
-    file_data = await file.read()
-    if not file_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="uploaded file is empty",
-        )
-
-    metadata = _build_metadata(metadata_json, course_id, owner_id)
-    suffix = Path(original_file_name).suffix or ".tmp"
-    tmp_path: Path | None = None
-
-    logger.info(
-        "http.ProcessDocument.received",
-        file_name=original_file_name,
-        size_bytes=len(file_data),
+    # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+    # Document processing now flows through the Core API upload workflow.
+    await file.close()
+    logger.warning("http.ProcessDocument.legacy_blocked", document_id=document_id)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="POST /documents/process is disabled: use the Core API upload workflow instead",
     )
-
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(file_data)
-            tmp_path = Path(tmp.name)
-
-        dto = ProcessDocumentRequest(
-            file_path=tmp_path,
-            document_id=_normalize_optional(document_id),
-            original_file_name=original_file_name,
-            language=_normalize_optional(language),
-            metadata=metadata,
-        )
-        result = use_case.execute(dto)
-        if result.is_err():
-            _raise_delivery_error(result.error)
-
-        return result.unwrap()
-
-    finally:
-        await file.close()
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink()
 
 
 @app.get(
@@ -801,20 +760,10 @@ def delete_document(
     document_id: str,
     use_case: DeleteDocumentUseCase = Depends(_get_delete_use_case),
 ) -> DeleteDocumentHttpResponse:
-    document_id = document_id.strip()
-    if not document_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="document_id is required",
-        )
-
-    result = use_case.execute(DeleteDocumentRequest(document_id=document_id))
-    if result.is_err():
-        _raise_delivery_error(result.error)
-
-    response = result.unwrap()
-    return DeleteDocumentHttpResponse(
-        document_id=response.document_id,
-        success=response.success,
-        message=response.message,
+    # Legacy mutation endpoint — closed per ownership-split plan (Phase 0).
+    # Document deletion now flows through the Core API document workflow.
+    logger.warning("http.DeleteDocument.legacy_blocked", document_id=document_id)
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="DELETE /documents/{id} is disabled: use the Core API document workflow instead",
     )
