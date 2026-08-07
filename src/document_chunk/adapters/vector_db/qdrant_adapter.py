@@ -253,7 +253,7 @@ class QdrantAdapter(IVectorStore):
             _F_CONTENT:       chunk.content,
             _F_CONTENT_HASH:  chunk.content_hash,
             _F_IMAGES:        chunk.images,
-            _F_ENRICHED:      chunk.embedding_input,
+            _F_EMBEDDING_INPUT: chunk.embedding_input,
         }
 
     def _payload_to_chunk(self, payload: dict) -> Chunk:
@@ -274,7 +274,7 @@ class QdrantAdapter(IVectorStore):
         return Chunk(
             id=payload[_F_CHUNK_ID],
             content=content,
-            embedding_input=payload.get(_F_ENRICHED) or content,
+            embedding_input=payload.get(_F_EMBEDDING_INPUT) or content,
             content_hash=payload.get(_F_CONTENT_HASH) or hashlib.md5(content.encode()).hexdigest(),
             metadata=metadata,
             images=payload.get(_F_IMAGES, []),

@@ -105,6 +105,31 @@ class TestHttpApi:
         assert payload["total_questions"] == 1
         assert payload["questions"][0]["question_id"] == "quiz-001"
 
+    def test_process_document_is_legacy_blocked(self):
+        container = _FakeContainer()
+        api.app.state.container = container
+
+        client = TestClient(api.app)
+        response = client.post(
+            "/documents/process",
+            files={"file": ("lecture.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+
+        assert response.status_code == 410
+        assert "disabled" in response.json()["detail"]
+        container.process_document_use_case.execute.assert_not_called()
+
+    def test_delete_document_is_legacy_blocked(self):
+        container = _FakeContainer()
+        api.app.state.container = container
+
+        client = TestClient(api.app)
+        response = client.delete("/documents/doc-001")
+
+        assert response.status_code == 410
+        assert "disabled" in response.json()["detail"]
+        container.delete_document_use_case.execute.assert_not_called()
+
     def test_get_document_status_returns_payload(self):
         container = _FakeContainer()
         container.get_document_status_use_case.execute.return_value = Ok(
@@ -122,4 +147,5 @@ class TestHttpApi:
         assert response.status_code == 200
         payload = response.json()
         assert payload["document_id"] == "doc-001"
-        assert payload["status"] == "ENRICHED"
+        # ENRICHED is a backward-compat alias; canonical value is GENERATED_DRAFT
+        assert payload["status"] == IngestionStatus.ENRICHED.value

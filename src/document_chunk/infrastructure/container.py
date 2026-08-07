@@ -164,7 +164,7 @@ class Container:
         from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
 
         logger.debug("container.init", component="PostgresMetadataStore")
-        return PostgresMetadataStore(self._settings.sql, self._settings.outbox)
+        return PostgresMetadataStore(self._settings.sql)
 
     # ------------------------------------------------------------------
     # Graph Store (Neo4j)
@@ -315,6 +315,18 @@ class Container:
         return SearchByLearningOutcomeUseCase(
             metadata_store=self.metadata_store,
             graph_store=self.graph_store,
+        )
+
+    @cached_property
+    def retrieve_quiz_context_use_case(self):
+        from document_chunk.application.use_cases.retrieve_quiz_context import (
+            RetrieveQuizContextUseCase,
+        )
+
+        logger.debug("container.init", component="RetrieveQuizContextUseCase")
+        return RetrieveQuizContextUseCase(
+            metadata_store=self.metadata_store,
+            semantic_search=self.search_chunks_use_case,
         )
 
     @cached_property

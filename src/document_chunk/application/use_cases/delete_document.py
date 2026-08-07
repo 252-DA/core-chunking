@@ -25,7 +25,7 @@ class DeleteDocumentUseCase:
     """
     Delete a document from SQL source-of-truth and enqueue downstream cleanup.
 
-    MetadataStore is responsible for appending the `document_deleted` outbox event
+    MetadataStore is responsible for appending the `DOCUMENT_DELETED` outbox event
     in the same transaction as the SQL delete.
     """
 

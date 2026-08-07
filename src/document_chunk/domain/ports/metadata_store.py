@@ -1,9 +1,13 @@
+from __future__ import annotations
+
+import builtins
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
 from document_chunk.domain.entities.document import Document, DocumentType
+from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.shared.result import Result
 
 
@@ -104,19 +108,6 @@ class StoredQuizItem:
     difficulty: str = "medium"
     question_index: int = 0
     model_id: str | None = None
-
-
-@dataclass(frozen=True)
-class OutboxEvent:
-    id: str
-    event_type: str
-    aggregate_id: str
-    payload: dict
-    status: str = "PENDING"
-    attempts: int = 0
-    error_msg: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass(frozen=True)
@@ -221,7 +212,7 @@ class IMetadataStore(ABC):
     def upsert_chunks_with_outbox(
         self,
         chunks: list[StoredChunkMetadata],
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
@@ -268,7 +259,7 @@ class IMetadataStore(ABC):
         quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
-        outbox_event_type: str | None = None,
+        outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
         """
@@ -276,6 +267,16 @@ class IMetadataStore(ABC):
         in the same transaction. Returns the appended event_id, or None when no outbox
         event is written.
         """
+        ...
+
+    @abstractmethod
+    def persist_curriculum_quiz_items(
+        self,
+        lo_id: str,
+        bloom_level: str | int | None,
+        quiz_items: list[StoredQuizItem],
+    ) -> Result[None, Exception]:
+        """Append generated quiz drafts for one LO in a single transaction."""
         ...
 
     @abstractmethod
@@ -297,24 +298,11 @@ class IMetadataStore(ABC):
     @abstractmethod
     def append_outbox_event(
         self,
-        event_type: str,
+        event_type: OutboxEventType,
         aggregate_id: str,
         payload: dict,
     ) -> Result[str, Exception]:
         """Append event vào outbox, trả về event_id."""
-        ...
-
-    @abstractmethod
-    def fetch_pending_outbox(self, limit: int = 100) -> Result[list[OutboxEvent], Exception]:
-        """Lấy events PENDING theo thứ tự created_at."""
-        ...
-
-    @abstractmethod
-    def mark_outbox_done(self, event_id: str) -> Result[None, Exception]:
-        ...
-
-    @abstractmethod
-    def mark_outbox_failed(self, event_id: str, error_msg: str) -> Result[None, Exception]:
         ...
 
     @abstractmethod
@@ -355,10 +343,10 @@ class IMetadataStore(ABC):
     def upsert_curriculum(
         self,
         course: "StoredCourse",
-        chapters: "list[StoredChapter]",
-        learning_outcomes: "list[StoredLearningOutcome]",
-        assessments: "list[StoredAssessment]",
-        lo_assessment_links: "list[tuple[str, str]]",
+        chapters: builtins.list[StoredChapter],
+        learning_outcomes: builtins.list[StoredLearningOutcome],
+        assessments: builtins.list[StoredAssessment],
+        lo_assessment_links: builtins.list[tuple[str, str]],
     ) -> Result[None, Exception]:
         """Insert/update toàn bộ curriculum cho một course trong một transaction."""
         ...
@@ -367,7 +355,13 @@ class IMetadataStore(ABC):
     def get_curriculum(
         self, course_id: str
     ) -> Result[
-        "tuple[StoredCourse, list[StoredChapter], list[StoredLearningOutcome], list[StoredAssessment]] | None",
+        tuple[
+            StoredCourse,
+            builtins.list[StoredChapter],
+            builtins.list[StoredLearningOutcome],
+            builtins.list[StoredAssessment],
+        ]
+        | None,
         Exception,
     ]:
         """Lấy curriculum đầy đủ theo course_id. None nếu chưa có."""
@@ -376,21 +370,21 @@ class IMetadataStore(ABC):
     @abstractmethod
     def list_los_by_chapter(
         self, course_id: str, chapter_code: str
-    ) -> Result["list[StoredLearningOutcome]", Exception]:
+    ) -> Result[builtins.list[StoredLearningOutcome], Exception]:
         """Lấy LOs thuộc chapter (L.O.N.*) theo course_id + chapter_code."""
         ...
 
     @abstractmethod
     def list_los_by_assessment(
         self, course_id: str, assessment_code: str
-    ) -> Result["list[StoredLearningOutcome]", Exception]:
+    ) -> Result[builtins.list[StoredLearningOutcome], Exception]:
         """Lấy LOs được evaluate bởi assessment_code."""
         ...
 
     @abstractmethod
     def upsert_chunk_lo_mappings(
         self,
-        mappings: "list[StoredChunkLOMapping]",
+        mappings: builtins.list[StoredChunkLOMapping],
     ) -> Result[None, Exception]:
         """Bulk upsert chunk→LO mapping, ON CONFLICT update confidence + source."""
         ...
@@ -398,8 +392,19 @@ class IMetadataStore(ABC):
     @abstractmethod
     def list_chunks_for_lo(
         self, lo_id: str
-    ) -> Result["list[StoredChunkMetadata]", Exception]:
+    ) -> Result[builtins.list[StoredChunkMetadata], Exception]:
         """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
+        ...
+
+    @abstractmethod
+    def update_content_generation_request(
+        self,
+        request_id: str,
+        status: str,
+        generated_count: int | None = None,
+        last_error: str | None = None,
+    ) -> Result[None, Exception]:
+        """Update lifecycle state for an asynchronous content-generation request."""
         ...
 
     # ------------------------------------------------------------------
@@ -412,6 +417,6 @@ class IMetadataStore(ABC):
         course_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> Result["list[DocumentSummary]", Exception]:
+    ) -> Result[builtins.list[DocumentSummary], Exception]:
         """List document summaries (có chunk_count) cho LMS/web admin, optional filter theo course_id."""
         ...

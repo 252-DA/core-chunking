@@ -18,7 +18,6 @@ from document_chunk.infrastructure.config import (
     MetricsConfig,
     MinioConfig,
     Neo4jConfig,
-    OutboxConfig,
     ParserConfig,
     QdrantConfig,
     RedisConfig,
@@ -104,15 +103,6 @@ class TestRedisConfig:
         assert cfg.db == 0
 
 
-class TestOutboxConfig:
-    def test_defaults(self):
-        cfg = OutboxConfig()
-        assert cfg.enabled is True
-        assert cfg.poll_interval_seconds == 5
-        assert cfg.batch_size == 100
-        assert cfg.max_attempts == 10
-
-
 class TestParserConfig:
     def test_defaults(self):
         cfg = ParserConfig()
@@ -196,7 +186,6 @@ class TestSettings:
         assert settings.sql is not None
         assert settings.neo4j is not None
         assert settings.redis is not None
-        assert settings.outbox is not None
         assert settings.parser is not None
         assert settings.chunker is not None
         assert settings.llamaindex_chunker is not None
