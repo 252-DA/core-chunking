@@ -136,8 +136,8 @@ class TestEmbedderConfig:
         assert cfg.provider == "bge"
         assert cfg.bge_model == "BAAI/bge-m3"
         assert cfg.bge_use_fp16 is True
-        assert cfg.batch_size == 32
-        assert cfg.max_length == 8192
+        assert cfg.batch_size == 4
+        assert cfg.max_length == 1024
 
 
 class TestLlmConfig:

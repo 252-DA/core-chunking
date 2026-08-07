@@ -143,11 +143,11 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 c.chunk_id,
                 c.document_id,
                 c.content_text or c.embedding_input or "",
-                c.chunk_index,
                 list(c.heading_path),
                 c.page_number,
-                c.document_id,
+                c.chunk_index,
                 c.language if c.language in {"vi", "en", "mixed"} else "vi",
+                c.document_id,
             )
             for c in chunks
         ]

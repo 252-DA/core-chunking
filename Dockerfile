@@ -12,6 +12,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libmagic1 \
+        build-essential \
+        zlib1g-dev \
         libgl1 \
         libglib2.0-0 \
         poppler-utils \
@@ -29,7 +31,6 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --extra embeddings --extra llamaindex --no-install-project
 
 COPY src/ src/
-COPY examples/ examples/
 
 EXPOSE 50051 8000 8001
 

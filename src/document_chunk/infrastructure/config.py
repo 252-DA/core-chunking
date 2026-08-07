@@ -141,8 +141,10 @@ class EmbedderConfig(BaseSettings):
     bge_use_fp16: bool = True
 
     # Common
-    batch_size: int = 32
-    max_length: int = 8192
+    # Chunks are capped around 1,500 characters. Smaller batches avoid CPU OOM
+    # when the PDF parser and BGE model briefly coexist in the worker process.
+    batch_size: int = 4
+    max_length: int = 1024
 
     # OpenAI
     openai_api_key: str | None = None

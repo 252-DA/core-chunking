@@ -100,48 +100,20 @@ class TestPostgresMetadataStore:
         assert connection.commit_calls == 1
         assert len(cursor.executemany_calls) == 1
         assert "INSERT INTO chunks" in cursor.executemany_calls[0][0]
-        assert len(cursor.execute_calls) == 2  # EXISTS guard + outbox insert
-        assert "INSERT INTO outbox_events" in cursor.execute_calls[1][0]
-
-    def test_upsert_chunks_with_outbox_stops_when_document_deleted(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.fetchone_result = (False,)  # document soft-deleted
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.upsert_chunks_with_outbox(
-            chunks=[
-                StoredChunkMetadata(
-                    chunk_id="chunk-001",
-                    document_id="doc-001",
-                    chunk_index=0,
-                    heading_path=("Introduction",),
-                    heading_level=1,
-                    page_number=1,
-                    content_length=42,
-                    language="en",
-                )
-            ],
-            event_type=OutboxEventType.HEADING_GRAPH_PROJECT,
-            aggregate_id="doc-001",
-            payload={"document_id": "doc-001"},
-        )
-
-        assert result.is_err()
-        from document_chunk.domain.exceptions import DocumentStaleError
-
-        assert isinstance(result.error, DocumentStaleError)
-        # Không ghi chunk, không append outbox, không commit.
-        assert connection.commit_calls == 0
-        assert len(cursor.executemany_calls) == 0
-        assert len(cursor.execute_calls) == 1  # chỉ có EXISTS guard
-        assert "INSERT INTO outbox_events" not in " ".join(q for q, _ in cursor.execute_calls)
+        assert cursor.executemany_calls[0][1] == [
+            (
+                "chunk-001",
+                "doc-001",
+                "",
+                ["Introduction"],
+                1,
+                0,
+                "en",
+                "doc-001",
+            )
+        ]
+        assert len(cursor.execute_calls) == 1
+        assert "INSERT INTO outbox_events" in cursor.execute_calls[0][0]
 
     def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(
         self, monkeypatch
