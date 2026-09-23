@@ -118,8 +118,9 @@ class StoredCourse:
     title_en: str | None = None
     credits: int | None = None
     semester: str | None = None
+    syllabus_version: str | None = None
+    lo_year: str | None = None
     source_document_id: str | None = None
-    extraction_confidence: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,9 @@ class StoredChapter:
     code: str
     title: str
     order_index: int = 0
+    title_en: str | None = None
+    source_section: str | None = None
+    source_page: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,10 @@ class StoredLearningOutcome:
     statement_en: str | None = None
     bloom_level: str | None = None
     cdio_level: int | None = None
+    bloom_provenance: str = "inferred"
+    cdio_provenance: str = "inferred"
+    source_section: str | None = None
+    source_page: int | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +160,76 @@ class StoredAssessment:
     name_en: str | None = None
     category: str = "quiz"
     weight: float | None = None
+    parent_code: str | None = None
+    activity_type: str | None = None
+    weight_provenance: str = "inferred"
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredChapterLOLink:
+    """Cạnh chương ↔ LO. Quan hệ nhiều–nhiều, đọc từ bảng mục 6."""
+    chapter_id: str
+    lo_id: str
+    provenance: str = "extracted"
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredLOAssessmentLink:
+    """
+    Cạnh LO ↔ hoạt động đánh giá.
+
+    ``scope="course"`` là phát biểu chung ở mục 5.3; ``scope="session"`` là cạnh
+    do một hàng cụ thể của mục 6 khẳng định (``session_order`` là thứ tự hàng).
+    """
+    lo_id: str
+    assessment_id: str
+    session_order: int = 0
+    scope: str = "course"
+    chapter_id: str | None = None
+    provenance: str = "extracted"
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredCourseGoal:
+    """Mục tiêu học phần (mục 4.1) — tách khỏi chuẩn đầu ra (mục 4.2)."""
+    course_id: str
+    code: str
+    statement_vi: str
+    statement_en: str | None = None
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredCourseSession:
+    """Một hàng của bảng mục 6 — một buổi học."""
+    course_id: str
+    order_index: int
+    title_vi: str
+    session_no: int | None = None
+    chapter_id: str | None = None
+    title_en: str | None = None
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredExtractionIssue:
+    """Chỗ chưa chắc chắn khi trích đề cương — đầu vào màn hình kiểm tra."""
+    course_id: str
+    code: str
+    severity: str
+    message: str
+    document_id: str | None = None
+    source_section: str | None = None
+    source_page: int | None = None
+    source_locator: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +238,7 @@ class StoredChunkLOMapping:
     lo_id: str
     confidence: float
     source: str
+    provenance: str = "inferred"
 
 
 @dataclass(frozen=True)
@@ -346,9 +425,20 @@ class IMetadataStore(ABC):
         chapters: builtins.list[StoredChapter],
         learning_outcomes: builtins.list[StoredLearningOutcome],
         assessments: builtins.list[StoredAssessment],
-        lo_assessment_links: builtins.list[tuple[str, str]],
+        lo_assessment_links: builtins.list[StoredLOAssessmentLink],
+        chapter_lo_links: builtins.list[StoredChapterLOLink] | None = None,
+        goals: builtins.list[StoredCourseGoal] | None = None,
+        sessions: builtins.list[StoredCourseSession] | None = None,
+        issues: builtins.list[StoredExtractionIssue] | None = None,
     ) -> Result[None, Exception]:
         """Insert/update toàn bộ curriculum cho một course trong một transaction."""
+        ...
+
+    @abstractmethod
+    def list_chapter_lo_links(
+        self, course_id: str
+    ) -> Result[builtins.list[StoredChapterLOLink], Exception]:
+        """Quan hệ chương ↔ LO của một học phần (nhiều–nhiều)."""
         ...
 
     @abstractmethod

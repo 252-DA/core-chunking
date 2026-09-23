@@ -11,10 +11,15 @@ from document_chunk.domain.exceptions import MetadataStoreError
 from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
     StoredChapter,
+    StoredChapterLOLink,
     StoredChunkLOMapping,
     StoredChunkMetadata,
     StoredCourse,
+    StoredCourseGoal,
+    StoredCourseSession,
+    StoredExtractionIssue,
     StoredLearningOutcome,
+    StoredLOAssessmentLink,
     StoredQuizItem,
 )
 from document_chunk.shared.result import Err, Ok, Result
@@ -38,9 +43,8 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                     cur.executemany(
                         """
                         WITH target_context AS (
-                            SELECT ch.course_id, lo.statement_vi
+                            SELECT lo.course_id, lo.statement_vi
                             FROM learning_outcomes lo
-                            JOIN chapters ch ON ch.chapter_id = lo.chapter_id
                             WHERE lo.lo_id = %s::uuid
                               AND lo.deleted_at IS NULL
                               AND lo.is_current = TRUE
@@ -128,11 +132,24 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
         chapters: list[StoredChapter],
         learning_outcomes: list[StoredLearningOutcome],
         assessments: list[StoredAssessment],
-        lo_assessment_links: list[tuple[str, str]],
+        lo_assessment_links: list[StoredLOAssessmentLink],
+        chapter_lo_links: list[StoredChapterLOLink] | None = None,
+        goals: list[StoredCourseGoal] | None = None,
+        sessions: list[StoredCourseSession] | None = None,
+        issues: list[StoredExtractionIssue] | None = None,
     ) -> Result[None, Exception]:
+        chapter_lo_links = chapter_lo_links or []
+        goals = goals or []
+        sessions = sessions or []
+        issues = issues or []
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
+                    # `courses.code` cũng là khoá unique, nên một học phần do
+                    # LMS tạo trước sẽ có course_id khác stable_uuid(code). Bám
+                    # theo hàng đang có thay vì chèn thêm một học phần trùng mã.
+                    course_uuid = self._course_uuid(cur, course.code)
+
                     cur.execute(
                         """
                         INSERT INTO courses (
@@ -146,7 +163,7 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             updated_at = NOW();
                         """,
                         (
-                            stable_uuid(course.course_id),
+                            course_uuid,
                             course.code,
                             course.title_vi,
                             course.title_en or course.semester,
@@ -156,57 +173,152 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                     if chapters:
                         cur.executemany(
                             """
-                            INSERT INTO chapters (chapter_id, course_id, title, sort_order, deleted_at)
-                            VALUES (%s::uuid, %s::uuid, %s, %s, NULL)
+                            INSERT INTO chapters (
+                                chapter_id, course_id, code, title, title_en,
+                                sort_order, source_section, source_page, deleted_at
+                            )
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, NULL)
                             ON CONFLICT (chapter_id) DO UPDATE SET
+                                code = EXCLUDED.code,
                                 title = EXCLUDED.title,
+                                title_en = EXCLUDED.title_en,
                                 sort_order = EXCLUDED.sort_order,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page,
                                 deleted_at = NULL;
                             """,
                             [
                                 (
                                     stable_uuid(c.chapter_id),
-                                    stable_uuid(c.course_id),
-                                    f"{c.code} {c.title}".strip(),
+                                    course_uuid,
+                                    c.code,
+                                    c.title,
+                                    c.title_en,
                                     c.order_index,
+                                    c.source_section,
+                                    c.source_page,
                                 )
                                 for c in chapters
                             ],
                         )
 
                     if learning_outcomes:
-                        chapter_by_code = {c.code: c.chapter_id for c in chapters}
+                        # LO gắn vào HỌC PHẦN. Không còn suy số chương từ mã LO:
+                        # quan hệ chương ↔ LO nằm ở chapter_los bên dưới.
                         cur.executemany(
                             """
                             INSERT INTO learning_outcomes (
-                                lo_id, chapter_id, code, statement_vi, statement_en,
-                                bloom_level, cdio_level, academic_year, version, is_current, deleted_at
+                                lo_id, course_id, code, parent_code,
+                                statement_vi, statement_en,
+                                bloom_level, bloom_provenance,
+                                cdio_level, cdio_provenance,
+                                source_section, source_page,
+                                academic_year, version, is_current, deleted_at
                             )
-                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, 'default', 1, TRUE, NULL)
-                            ON CONFLICT (chapter_id, code, academic_year, version) DO UPDATE SET
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s,
+                                    %s, %s, 'default', 1, TRUE, NULL)
+                            ON CONFLICT (course_id, code, academic_year, version) DO UPDATE SET
+                                parent_code = EXCLUDED.parent_code,
                                 statement_vi = EXCLUDED.statement_vi,
                                 statement_en = EXCLUDED.statement_en,
                                 bloom_level = EXCLUDED.bloom_level,
+                                bloom_provenance = EXCLUDED.bloom_provenance,
                                 cdio_level = EXCLUDED.cdio_level,
+                                cdio_provenance = EXCLUDED.cdio_provenance,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page,
                                 is_current = TRUE,
                                 deleted_at = NULL;
                             """,
                             [
                                 (
                                     stable_uuid(lo.lo_id),
-                                    stable_uuid(
-                                        chapter_by_code.get(
-                                            self._chapter_code_from_lo(lo.code),
-                                            f"{lo.course_id}:CH{self._chapter_code_from_lo(lo.code)}",
-                                        )
-                                    ),
+                                    course_uuid,
                                     lo.code,
+                                    lo.parent_code,
                                     lo.statement_vi,
                                     lo.statement_en,
                                     self._bloom_level(lo.bloom_level),
+                                    lo.bloom_provenance,
                                     self._cdio_level(lo.cdio_level),
+                                    lo.cdio_provenance,
+                                    lo.source_section,
+                                    lo.source_page,
                                 )
                                 for lo in learning_outcomes
+                            ],
+                        )
+
+                    if chapter_lo_links:
+                        cur.executemany(
+                            """
+                            INSERT INTO chapter_los (
+                                chapter_id, lo_id, provenance, source_section, source_page
+                            )
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s)
+                            ON CONFLICT (chapter_id, lo_id) DO UPDATE SET
+                                provenance = EXCLUDED.provenance,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page;
+                            """,
+                            [
+                                (
+                                    stable_uuid(link.chapter_id),
+                                    stable_uuid(link.lo_id),
+                                    link.provenance,
+                                    link.source_section,
+                                    link.source_page,
+                                )
+                                for link in chapter_lo_links
+                            ],
+                        )
+
+                    if goals:
+                        cur.executemany(
+                            """
+                            INSERT INTO course_goals (
+                                course_id, code, statement_vi, statement_en,
+                                source_section, source_page
+                            )
+                            VALUES (%s::uuid, %s, %s, %s, %s, %s)
+                            ON CONFLICT (course_id, code) DO UPDATE SET
+                                statement_vi = EXCLUDED.statement_vi,
+                                statement_en = EXCLUDED.statement_en,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page;
+                            """,
+                            [
+                                (
+                                    course_uuid, g.code, g.statement_vi,
+                                    g.statement_en, g.source_section, g.source_page,
+                                )
+                                for g in goals
+                            ],
+                        )
+
+                    if sessions:
+                        cur.executemany(
+                            """
+                            INSERT INTO course_sessions (
+                                course_id, order_index, session_no, chapter_id,
+                                title_vi, title_en, source_section, source_page
+                            )
+                            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (course_id, order_index) DO UPDATE SET
+                                session_no = EXCLUDED.session_no,
+                                chapter_id = EXCLUDED.chapter_id,
+                                title_vi = EXCLUDED.title_vi,
+                                title_en = EXCLUDED.title_en,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page;
+                            """,
+                            [
+                                (
+                                    course_uuid, s.order_index, s.session_no,
+                                    stable_uuid(s.chapter_id) if s.chapter_id else None,
+                                    s.title_vi, s.title_en, s.source_section, s.source_page,
+                                )
+                                for s in sessions
                             ],
                         )
 
@@ -214,24 +326,44 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                         cur.executemany(
                             """
                             INSERT INTO assessments (
-                                assessment_id, course_id, title, max_points, sort_order, type, deleted_at
+                                assessment_id, course_id, code, parent_code,
+                                title, title_en, activity_type,
+                                max_points, weight, weight_provenance,
+                                sort_order, type, source_section, source_page, deleted_at
                             )
-                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, NULL)
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s,
+                                    %s, %s, %s, %s, %s, %s, %s, NULL)
                             ON CONFLICT (assessment_id) DO UPDATE SET
+                                code = EXCLUDED.code,
+                                parent_code = EXCLUDED.parent_code,
                                 title = EXCLUDED.title,
+                                title_en = EXCLUDED.title_en,
+                                activity_type = EXCLUDED.activity_type,
                                 max_points = EXCLUDED.max_points,
+                                weight = EXCLUDED.weight,
+                                weight_provenance = EXCLUDED.weight_provenance,
                                 sort_order = EXCLUDED.sort_order,
                                 type = EXCLUDED.type,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page,
                                 deleted_at = NULL;
                             """,
                             [
                                 (
                                     stable_uuid(a.assessment_id),
-                                    stable_uuid(a.course_id),
+                                    course_uuid,
+                                    a.code,
+                                    a.parent_code,
                                     a.name_vi,
-                                    a.weight or 100,
+                                    a.name_en,
+                                    a.activity_type,
+                                    100,
+                                    a.weight,
+                                    a.weight_provenance,
                                     index + 1,
-                                    "QUIZ" if a.category.lower() == "quiz" else "ASSIGNMENT",
+                                    self._assessment_type(a.category),
+                                    a.source_section,
+                                    a.source_page,
                                 )
                                 for index, a in enumerate(assessments)
                             ],
@@ -240,13 +372,57 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                     if lo_assessment_links:
                         cur.executemany(
                             """
-                            INSERT INTO lo_assessments (lo_id, assessment_id)
-                            VALUES (%s::uuid, %s::uuid)
-                            ON CONFLICT DO NOTHING;
+                            INSERT INTO lo_assessments (
+                                lo_id, assessment_id, session_order, scope, chapter_id,
+                                provenance, source_section, source_page
+                            )
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (lo_id, assessment_id, session_order) DO UPDATE SET
+                                scope = EXCLUDED.scope,
+                                chapter_id = EXCLUDED.chapter_id,
+                                provenance = EXCLUDED.provenance,
+                                source_section = EXCLUDED.source_section,
+                                source_page = EXCLUDED.source_page;
                             """,
                             [
-                                (stable_uuid(lo_id), stable_uuid(assessment_id))
-                                for lo_id, assessment_id in lo_assessment_links
+                                (
+                                    stable_uuid(link.lo_id),
+                                    stable_uuid(link.assessment_id),
+                                    link.session_order,
+                                    link.scope,
+                                    stable_uuid(link.chapter_id) if link.chapter_id else None,
+                                    link.provenance,
+                                    link.source_section,
+                                    link.source_page,
+                                )
+                                for link in lo_assessment_links
+                            ],
+                        )
+
+                    # Ghi lại kết quả soát của lần trích này. Xoá các issue chưa
+                    # xử lý của lần trước để màn hình kiểm tra không tồn đọng.
+                    cur.execute(
+                        "DELETE FROM curriculum_extraction_issues "
+                        "WHERE course_id = %s::uuid AND resolved_at IS NULL;",
+                        (course_uuid,),
+                    )
+                    if issues:
+                        cur.executemany(
+                            """
+                            INSERT INTO curriculum_extraction_issues (
+                                course_id, document_id, code, severity, message,
+                                source_section, source_page, source_locator
+                            )
+                            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s);
+                            """,
+                            [
+                                (
+                                    course_uuid,
+                                    stable_uuid(i.document_id) if i.document_id else None,
+                                    i.code, i.severity, i.message,
+                                    i.source_section, i.source_page, i.source_locator,
+                                )
+                                for i in issues
                             ],
                         )
                 conn.commit()
@@ -271,7 +447,7 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                         WHERE course_id = %s::uuid
                           AND deleted_at IS NULL;
                         """,
-                        (stable_uuid(course_id),),
+                        (self._course_uuid(cur, course_id),),
                     )
                     row = cur.fetchone()
                     if row is None:
@@ -285,36 +461,39 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
 
                     cur.execute(
                         """
-                        SELECT chapter_id::text, course_id::text, title, sort_order
+                        SELECT chapter_id::text, course_id::text, title, sort_order, code, title_en
                         FROM chapters
                         WHERE course_id = %s::uuid
                           AND deleted_at IS NULL
                         ORDER BY sort_order;
                         """,
-                        (stable_uuid(course_id),),
+                        (self._course_uuid(cur, course_id),),
                     )
                     chapters = [
                         StoredChapter(
                             chapter_id=r[0],
                             course_id=r[1],
-                            code=str(r[3]),
+                            code=r[4],
                             title=r[2],
                             order_index=r[3],
+                            title_en=r[5],
                         )
                         for r in cur.fetchall()
                     ]
 
                     cur.execute(
                         """
-                        SELECT lo.lo_id::text, ch.course_id::text, lo.code, NULL AS parent_code,
-                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level
+                        SELECT lo.lo_id::text, lo.course_id::text, lo.code, lo.parent_code,
+                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level,
+                               lo.bloom_provenance, lo.cdio_provenance,
+                               lo.source_section, lo.source_page
                         FROM learning_outcomes lo
-                        JOIN chapters ch ON ch.chapter_id = lo.chapter_id
-                        WHERE ch.course_id = %s::uuid
+                        WHERE lo.course_id = %s::uuid
                           AND lo.deleted_at IS NULL
-                          AND lo.is_current = TRUE;
+                          AND lo.is_current = TRUE
+                        ORDER BY lo.code;
                         """,
-                        (stable_uuid(course_id),),
+                        (self._course_uuid(cur, course_id),),
                     )
                     los = [
                         StoredLearningOutcome(
@@ -326,28 +505,35 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             statement_en=r[5],
                             bloom_level=r[6],
                             cdio_level=r[7],
+                            bloom_provenance=r[8],
+                            cdio_provenance=r[9],
+                            source_section=r[10],
+                            source_page=r[11],
                         )
                         for r in cur.fetchall()
                     ]
 
                     cur.execute(
                         """
-                        SELECT assessment_id::text, course_id::text, title, type, max_points
+                        SELECT assessment_id::text, course_id::text, code, title, type,
+                               weight, parent_code, activity_type, title_en
                         FROM assessments
                         WHERE course_id = %s::uuid
                           AND deleted_at IS NULL;
                         """,
-                        (stable_uuid(course_id),),
+                        (self._course_uuid(cur, course_id),),
                     )
                     assessments = [
                         StoredAssessment(
                             assessment_id=r[0],
                             course_id=r[1],
                             code=r[2],
-                            name_vi=r[2],
-                            name_en=None,
-                            category=r[3],
-                            weight=float(r[4]),
+                            name_vi=r[3],
+                            name_en=r[8],
+                            category=r[4],
+                            weight=float(r[5]) if r[5] is not None else None,
+                            parent_code=r[6],
+                            activity_type=r[7],
                         )
                         for r in cur.fetchall()
                     ]
@@ -355,51 +541,102 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
-    def list_los_by_chapter(
-        self, course_id: str, chapter_code: str
-    ) -> Result[list[StoredLearningOutcome], Exception]:
+    def list_chapter_lo_links(
+        self, course_id: str
+    ) -> Result[list[StoredChapterLOLink], Exception]:
         try:
-            prefix = f"L.O.{chapter_code}."
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT lo_id, course_id, code, parent_code, statement_vi,
-                               statement_en, bloom_level, cdio_level
-                        FROM (
-                            SELECT lo.lo_id::text AS lo_id,
-                                   ch.course_id::text AS course_id,
-                                   lo.code,
-                                   NULL AS parent_code,
-                                   lo.statement_vi,
-                                   lo.statement_en,
-                                   lo.bloom_level,
-                                   lo.cdio_level
-                            FROM learning_outcomes lo
-                            JOIN chapters ch ON ch.chapter_id = lo.chapter_id
-                            WHERE ch.course_id = %s::uuid
-                              AND lo.deleted_at IS NULL
-                              AND lo.is_current = TRUE
-                        ) q
-                        WHERE code LIKE %s OR code = %s;
+                        SELECT cl.chapter_id::text, cl.lo_id::text, cl.provenance,
+                               cl.source_section, cl.source_page
+                        FROM chapter_los cl
+                        JOIN chapters ch ON ch.chapter_id = cl.chapter_id
+                        JOIN learning_outcomes lo ON lo.lo_id = cl.lo_id
+                        WHERE ch.course_id = %s::uuid
+                          AND ch.deleted_at IS NULL
+                          AND lo.deleted_at IS NULL
+                          AND lo.is_current = TRUE
+                        ORDER BY ch.sort_order, lo.code;
                         """,
-                        (stable_uuid(course_id), prefix + "%", f"L.O.{chapter_code}"),
+                        (self._course_uuid(cur, course_id),),
                     )
-                    return Ok(
-                        [
-                            StoredLearningOutcome(
-                                lo_id=r[0],
-                                course_id=r[1],
-                                code=r[2],
-                                parent_code=r[3],
-                                statement_vi=r[4],
-                                statement_en=r[5],
-                                bloom_level=r[6],
-                                cdio_level=r[7],
-                            )
-                            for r in cur.fetchall()
-                        ]
+                    return Ok([
+                        StoredChapterLOLink(
+                            chapter_id=r[0], lo_id=r[1], provenance=r[2],
+                            source_section=r[3], source_page=r[4],
+                        )
+                        for r in cur.fetchall()
+                    ])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_los_by_chapter(
+        self, course_id: str, chapter_code: str
+    ) -> Result[list[StoredLearningOutcome], Exception]:
+        """
+        LO của một chương, đọc từ bảng nối chapter_los.
+
+        Trước đây hàm này lọc bằng ``code LIKE 'L.O.<chương>.%'`` — tức là coi số
+        đầu của mã LO là số chương. Đề cương không nói vậy: L.O.2.2 được dạy ở
+        chương 4, 5, 7 và 12.
+        """
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT lo.lo_id::text, lo.course_id::text, lo.code, lo.parent_code,
+                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level,
+                               lo.bloom_provenance, lo.cdio_provenance,
+                               lo.source_section, lo.source_page
+                        FROM learning_outcomes lo
+                        JOIN chapter_los cl ON cl.lo_id = lo.lo_id
+                        JOIN chapters ch ON ch.chapter_id = cl.chapter_id
+                        WHERE lo.course_id = %s::uuid
+                          AND ch.code = %s
+                          AND ch.deleted_at IS NULL
+                          AND lo.deleted_at IS NULL
+                          AND lo.is_current = TRUE
+                        ORDER BY lo.code;
+                        """,
+                        (self._course_uuid(cur, course_id), chapter_code),
                     )
+                    return Ok([self._row_to_lo(r) for r in cur.fetchall()])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
+    def list_chapters_for_lo(
+        self, course_id: str, lo_code: str
+    ) -> Result[list[StoredChapter], Exception]:
+        """Chiều ngược lại: một LO được dạy ở những chương nào."""
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT ch.chapter_id::text, ch.course_id::text, ch.title,
+                               ch.sort_order, ch.code, ch.title_en
+                        FROM chapters ch
+                        JOIN chapter_los cl ON cl.chapter_id = ch.chapter_id
+                        JOIN learning_outcomes lo ON lo.lo_id = cl.lo_id
+                        WHERE lo.course_id = %s::uuid
+                          AND lo.code = %s
+                          AND ch.deleted_at IS NULL
+                          AND lo.deleted_at IS NULL
+                          AND lo.is_current = TRUE
+                        ORDER BY ch.sort_order;
+                        """,
+                        (self._course_uuid(cur, course_id), lo_code),
+                    )
+                    return Ok([
+                        StoredChapter(
+                            chapter_id=r[0], course_id=r[1], code=r[4],
+                            title=r[2], order_index=r[3], title_en=r[5],
+                        )
+                        for r in cur.fetchall()
+                    ])
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
@@ -411,31 +648,22 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT lo.lo_id::text, ch.course_id::text, lo.code, NULL AS parent_code,
-                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level
+                        SELECT DISTINCT
+                               lo.lo_id::text, lo.course_id::text, lo.code, lo.parent_code,
+                               lo.statement_vi, lo.statement_en, lo.bloom_level, lo.cdio_level,
+                               lo.bloom_provenance, lo.cdio_provenance,
+                               lo.source_section, lo.source_page
                         FROM learning_outcomes lo
                         JOIN lo_assessments la ON la.lo_id = lo.lo_id
                         JOIN assessments a ON a.assessment_id = la.assessment_id
-                        JOIN chapters ch ON ch.chapter_id = lo.chapter_id
-                        WHERE ch.course_id = %s::uuid AND a.title = %s;
+                        WHERE lo.course_id = %s::uuid
+                          AND a.code = %s
+                          AND lo.deleted_at IS NULL
+                          AND lo.is_current = TRUE;
                         """,
-                        (stable_uuid(course_id), assessment_code),
+                        (self._course_uuid(cur, course_id), assessment_code),
                     )
-                    return Ok(
-                        [
-                            StoredLearningOutcome(
-                                lo_id=r[0],
-                                course_id=r[1],
-                                code=r[2],
-                                parent_code=r[3],
-                                statement_vi=r[4],
-                                statement_en=r[5],
-                                bloom_level=r[6],
-                                cdio_level=r[7],
-                            )
-                            for r in cur.fetchall()
-                        ]
-                    )
+                    return Ok([self._row_to_lo(r) for r in cur.fetchall()])
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
@@ -450,12 +678,23 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                 with conn.cursor() as cur:
                     cur.executemany(
                         """
-                        INSERT INTO chunk_lo_mappings (chunk_id, lo_id, confidence)
-                        VALUES (%s::uuid, %s::uuid, %s)
+                        INSERT INTO chunk_lo_mappings (
+                            chunk_id, lo_id, confidence, source, provenance
+                        )
+                        VALUES (%s::uuid, %s::uuid, %s, %s, %s)
                         ON CONFLICT (chunk_id, lo_id) DO UPDATE SET
-                            confidence = GREATEST(EXCLUDED.confidence, chunk_lo_mappings.confidence);
+                            confidence = GREATEST(EXCLUDED.confidence, chunk_lo_mappings.confidence),
+                            source = EXCLUDED.source,
+                            -- Cạnh giảng viên đã xác nhận không bị hạ lại thành phỏng đoán.
+                            provenance = CASE
+                                WHEN chunk_lo_mappings.provenance = 'confirmed' THEN 'confirmed'
+                                ELSE EXCLUDED.provenance
+                            END;
                         """,
-                        [(m.chunk_id, m.lo_id, m.confidence) for m in mappings],
+                        [
+                            (m.chunk_id, m.lo_id, m.confidence, m.source, m.provenance)
+                            for m in mappings
+                        ],
                     )
                 conn.commit()
             return Ok(None)
@@ -534,28 +773,58 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                 )
             )
 
-    def _bloom_level(self, value: str | int | None) -> int:
+    def _course_uuid(self, cur, course_ref: str) -> str:
+        """
+        Giải quyết tham chiếu học phần thành course_id thật.
+
+        ``course_ref`` có thể là mã ("CO3011") hoặc course_id. Học phần do LMS
+        tạo trước sẽ có course_id không bằng ``stable_uuid(mã)``, nên tra theo cả
+        hai chiều thay vì giả định.
+        """
+        cur.execute(
+            "SELECT course_id::text FROM courses "
+            "WHERE code = %s OR course_id = %s::uuid LIMIT 1;",
+            (course_ref, stable_uuid(course_ref)),
+        )
+        row = cur.fetchone()
+        return row[0] if row else stable_uuid(course_ref)
+
+    def _row_to_lo(self, r) -> StoredLearningOutcome:
+        return StoredLearningOutcome(
+            lo_id=r[0], course_id=r[1], code=r[2], parent_code=r[3],
+            statement_vi=r[4], statement_en=r[5],
+            bloom_level=r[6], cdio_level=r[7],
+            bloom_provenance=r[8], cdio_provenance=r[9],
+            source_section=r[10], source_page=r[11],
+        )
+
+    def _assessment_type(self, category: str) -> str:
+        """Ánh xạ sang tập giá trị mà check constraint `assessments_type_check` cho phép."""
+        return {
+            "quiz": "QUIZ",
+            "group_quiz": "PROJECT",   # GPJ-Project nhóm trong DCMH
+            "project": "PROJECT",
+            "midterm": "MIDTERM",
+            "final": "FINAL_EXAM",
+        }.get((category or "").lower(), "ASSIGNMENT")
+
+    def _bloom_level(self, value: str | int | None) -> int | None:
+        """
+        None khi không biết — KHÔNG mặc định về 2 ("understand").
+
+        Đề cương định dạng này không ghi Bloom. Trả về một mức mặc định sẽ khiến
+        cột bloom_level luôn chứa dữ liệu bịa mà không cách nào phân biệt với
+        giá trị thật.
+        """
         if isinstance(value, int) and 1 <= value <= 6:
             return value
-        mapping = {
-            "remember": 1,
-            "understand": 2,
-            "apply": 3,
-            "analyze": 4,
-            "evaluate": 5,
-            "create": 6,
-        }
-        return mapping.get(str(value or "").lower(), 2)
+        return {
+            "remember": 1, "understand": 2, "apply": 3,
+            "analyze": 4, "evaluate": 5, "create": 6,
+        }.get(str(value or "").lower())
 
-    def _cdio_level(self, value: str | int | None) -> str:
+    def _cdio_level(self, value: str | int | None) -> str | None:
+        """None khi không biết — CDIO cũng không có trong đề cương."""
         if str(value) in {"I", "II", "III"}:
             return str(value)
-        if value == 1:
-            return "I"
-        if value == 2:
-            return "II"
-        return "III"
-
-    def _chapter_code_from_lo(self, code: str) -> str:
-        parts = code.replace("L.O.", "").split(".")
-        return parts[0] if parts and parts[0] else "1"
+        return {1: "I", 2: "II", 3: "III"}.get(value)

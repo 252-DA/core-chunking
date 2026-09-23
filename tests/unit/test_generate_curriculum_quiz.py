@@ -53,7 +53,6 @@ _STORED_COURSE = StoredCourse(
     course_id="CO3115",
     code="CO3115",
     title_vi="Phân tích và Thiết kế Hệ thống",
-    extraction_confidence=0.9,
 )
 
 _STORED_LO = StoredLearningOutcome(
@@ -96,6 +95,7 @@ def mock_store() -> MagicMock:
     ))
     store.list_chunks_for_lo.return_value = Ok([_STORED_CHUNK])
     store.persist_enrichment_batch.return_value = Ok(None)
+    store.persist_curriculum_quiz_items.return_value = Ok(None)
     store.list_los_by_chapter.return_value = Ok([_STORED_LO])
     store.list_los_by_assessment.return_value = Ok([_STORED_LO])
     return store

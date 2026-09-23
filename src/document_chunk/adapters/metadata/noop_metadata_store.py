@@ -18,6 +18,11 @@ from document_chunk.domain.ports.metadata_store import (
     StoredLearningOutcome,
     StoredLessonCard,
     StoredQuizItem,
+    StoredChapterLOLink,
+    StoredCourseGoal,
+    StoredCourseSession,
+    StoredExtractionIssue,
+    StoredLOAssessmentLink,
 )
 from document_chunk.shared.result import Ok, Result
 
@@ -135,9 +140,18 @@ class NoopMetadataStore(IMetadataStore):
         chapters: list[StoredChapter],
         learning_outcomes: list[StoredLearningOutcome],
         assessments: list[StoredAssessment],
-        lo_assessment_links: list[tuple[str, str]],
+        lo_assessment_links: list[StoredLOAssessmentLink],
+        chapter_lo_links: list[StoredChapterLOLink] | None = None,
+        goals: list[StoredCourseGoal] | None = None,
+        sessions: list[StoredCourseSession] | None = None,
+        issues: list[StoredExtractionIssue] | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
+
+    def list_chapter_lo_links(
+        self, course_id: str
+    ) -> Result[list[StoredChapterLOLink], Exception]:
+        return Ok([])
 
     def get_curriculum(
         self, course_id: str

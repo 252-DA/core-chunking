@@ -74,3 +74,6 @@ marker_output/
 # Editor / agent
 .claude/
 .codex
+
+# Đề cương mẫu dùng làm fixture test cho DcmhExtractor.
+!tests/fixtures/syllabus/*.pdf

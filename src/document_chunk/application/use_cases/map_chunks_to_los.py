@@ -58,9 +58,20 @@ class MapChunksToLosUseCase:
         from document_chunk.domain.entities.curriculum import (
             Assessment,
             Chapter,
+            ChapterLOLink,
             Course,
             LearningOutcome,
         )
+
+        # Quan hệ chương ↔ LO là căn cứ duy nhất để gắn chunk; thiếu nó thì
+        # mapper không có gì để dựa vào, nên lấy tường minh chứ không suy từ mã.
+        links_result = self._metadata_store.list_chapter_lo_links(request.course_id)
+        if links_result.is_err():
+            return Err(links_result.error)
+        stored_links = links_result.unwrap()
+
+        chapter_code_by_id = {c.chapter_id: c.code for c in stored_chapters}
+        lo_code_by_id = {lo.lo_id: lo.code for lo in stored_los}
 
         curriculum = Curriculum(
             course=Course(
@@ -78,6 +89,8 @@ class MapChunksToLosUseCase:
                     lo_id=lo.lo_id, code=lo.code, parent_code=lo.parent_code,
                     statement_vi=lo.statement_vi, statement_en=lo.statement_en,
                     bloom_level=lo.bloom_level, cdio_level=lo.cdio_level,
+                    bloom_provenance=lo.bloom_provenance,
+                    cdio_provenance=lo.cdio_provenance,
                 )
                 for lo in stored_los
             ),
@@ -85,11 +98,20 @@ class MapChunksToLosUseCase:
                 Assessment(
                     assessment_id=a.assessment_id, code=a.code, name_vi=a.name_vi,
                     name_en=a.name_en, category=a.category, weight=a.weight,
+                    parent_code=a.parent_code, activity_type=a.activity_type,
                 )
                 for a in stored_assessments
             ),
             lo_assessment_links=(),
-            extraction_confidence=stored_course.extraction_confidence,
+            chapter_lo_links=tuple(
+                ChapterLOLink(
+                    chapter_code=chapter_code_by_id[link.chapter_id],
+                    lo_code=lo_code_by_id[link.lo_id],
+                    provenance=link.provenance,
+                )
+                for link in stored_links
+                if link.chapter_id in chapter_code_by_id and link.lo_id in lo_code_by_id
+            ),
         )
 
         # 2. Fetch chunks for document
