@@ -8,6 +8,13 @@ Strategy:
     (dùng text layer khi có, OCR khi text layer thiếu/rỗng).
   - do_picture_description=False (default): bật khi có VLM backend để mô tả ảnh/diagram.
   - Lazy-load: DocumentConverter chỉ khởi tạo khi parse() được gọi lần đầu.
+
+Đây là backend đắt (OCR + layout model). ``parse_pages()`` chạy Docling trên
+một khoảng trang để ``AdaptivePdfParser`` chỉ trả tiền cho những trang mà text
+path không đọc được, thay vì OCR lại cả tài liệu.
+
+Kết quả luôn kèm ``metadata['page_report']`` theo cùng contract với
+``pdf_page_assessment`` để coverage của hai backend ghép được với nhau.
 """
 import io
 import uuid
@@ -21,6 +28,7 @@ from document_chunk.domain.entities.document import (
     ParsedDocument,
     Section,
 )
+from document_chunk.adapters.parsers.pdf_page_assessment import PageStatus
 from document_chunk.domain.exceptions import ParseError
 from document_chunk.domain.ports.parser import IParser
 from document_chunk.infrastructure.config import ParserConfig
@@ -30,6 +38,8 @@ from document_chunk.shared.tracing import get_tracer
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
+
+PARSER_NAME = "docling"
 
 
 class DoclingPdfParser(IParser):
@@ -45,26 +55,46 @@ class DoclingPdfParser(IParser):
     # ------------------------------------------------------------------
 
     def parse(self, path: Path) -> Result[ParsedDocument, Exception]:
-        logger.info("docling_pdf_parser.started", file=path.name)
+        return self._run(path, page_range=None)
+
+    def parse_pages(
+        self, path: Path, first_page: int, last_page: int
+    ) -> Result[ParsedDocument, Exception]:
+        """Chạy Docling trên khoảng trang [first_page, last_page] (1-based, inclusive)."""
+        return self._run(path, page_range=(first_page, last_page))
+
+    def _run(
+        self, path: Path, *, page_range: tuple[int, int] | None
+    ) -> Result[ParsedDocument, Exception]:
+        logger.info("docling_pdf_parser.started", file=path.name, page_range=page_range)
         with tracer.start_as_current_span("docling_pdf_parser.parse") as span:
             span.set_attribute("file.name", path.name)
             span.set_attribute("file.size_bytes", path.stat().st_size)
+            if page_range:
+                span.set_attribute("page_range", f"{page_range[0]}-{page_range[1]}")
             try:
-                result = self._converter.convert(str(path))
-                parsed = self._extract(path, result)
+                kwargs = {"page_range": page_range} if page_range else {}
+                result = self._converter.convert(str(path), **kwargs)
+                parsed = self._extract(path, result, page_range=page_range)
                 span.set_attribute("pages", parsed.page_count)
                 span.set_attribute("sections", len(parsed.sections))
                 span.set_attribute("images", len(parsed.images))
                 logger.info(
                     "docling_pdf_parser.completed",
                     file=path.name,
+                    page_range=page_range,
                     pages=parsed.page_count,
                     sections=len(parsed.sections),
                     images=len(parsed.images),
                 )
                 return Ok(parsed)
             except Exception as exc:
-                logger.error("docling_pdf_parser.failed", file=path.name, error=str(exc))
+                logger.error(
+                    "docling_pdf_parser.failed",
+                    file=path.name,
+                    page_range=page_range,
+                    error=str(exc),
+                )
                 return Err(ParseError(f"Failed to parse PDF '{path.name}'", cause=exc))
 
     # ------------------------------------------------------------------
@@ -146,12 +176,15 @@ class DoclingPdfParser(IParser):
     # Core extraction: ConversionResult → ParsedDocument
     # ------------------------------------------------------------------
 
-    def _extract(self, path: Path, result) -> ParsedDocument:
+    def _extract(
+        self, path: Path, result, *, page_range: tuple[int, int] | None = None
+    ) -> ParsedDocument:
         doc = result.document  # DoclingDocument
-        page_count = len(result.pages) if result.pages else 0
+        page_count = self._page_count(result, doc)
 
-        sections = self._iter_sections(doc)
-        images = self._extract_images(doc)
+        keep_image_bytes = self._config.pdf_extract_images
+        sections = self._iter_sections(doc, keep_image_bytes=keep_image_bytes)
+        images = self._extract_images(doc) if keep_image_bytes else {}
 
         # Guard: Docling trả về empty → file hỏng hoặc blank PDF
         if not sections and not images:
@@ -182,6 +215,7 @@ class DoclingPdfParser(IParser):
         if hasattr(doc, "metadata") and doc.metadata:
             language = getattr(doc.metadata, "language", None)
 
+        report = self._page_report(sections, page_count, page_range)
         return ParsedDocument(
             document=document,
             sections=sections,
@@ -189,17 +223,79 @@ class DoclingPdfParser(IParser):
             images=images,
             language=language,
             metadata={
-                "parser": "docling",
+                "parser": PARSER_NAME,
                 "do_ocr": self._config.docling_do_ocr,
                 "do_table_structure": self._config.docling_do_table_structure,
+                "extract_images": keep_image_bytes,
+                "page_range": list(page_range) if page_range else None,
+                "page_report": report,
             },
         )
+
+    # ------------------------------------------------------------------
+    # Page bookkeeping
+    # ------------------------------------------------------------------
+
+    def _page_count(self, result, doc) -> int:
+        """Số trang của tài liệu — không phải số trang đã convert."""
+        try:
+            count = doc.num_pages()
+            if count:
+                return int(count)
+        except Exception:
+            pass
+        return len(result.pages) if result.pages else 0
+
+    def _page_report(
+        self,
+        sections: list[Section],
+        page_count: int,
+        page_range: tuple[int, int] | None,
+    ) -> list[dict]:
+        """
+        Một dòng mỗi trang đã convert, cùng contract với pdf_page_assessment.
+
+        Trang đã qua Docling mà vẫn không có nội dung → ``needs_ocr`` với
+        ``parsed_by=None``: đã xử lý nhưng không ra text (ảnh không chứa chữ),
+        khác với trang chưa ai đọc.
+        """
+        chars: dict[int, int] = {}
+        for section in sections:
+            if section.page_number is None:
+                continue
+            chars[section.page_number] = chars.get(section.page_number, 0) + len(
+                section.content
+            )
+
+        # Docling giữ số trang tuyệt đối khi convert theo khoảng
+        # (standard_pdf_pipeline: Page(page_no=i + 1)), nên không cần dịch offset.
+        first, last = page_range or (1, page_count)
+        pages = range(first, last + 1) if last >= first else sorted(chars)
+        report: list[dict] = []
+        for page in pages:
+            count = chars.get(page, 0)
+            report.append({
+                "page": page,
+                "status": (
+                    PageStatus.TEXT.value if count else PageStatus.NEEDS_OCR.value
+                ),
+                "chars": count,
+                "lines": 0,
+                "image_area_ratio": 0.0,
+                "multi_column": False,
+                "tables": 0,
+                "reasons": [] if count else ["no_content_from_docling"],
+                "attempts": [PARSER_NAME],
+                "parsed_by": PARSER_NAME if count else None,
+                "layout_aware": bool(count),
+            })
+        return report
 
     # ------------------------------------------------------------------
     # Section iteration — dispatch theo item type
     # ------------------------------------------------------------------
 
-    def _iter_sections(self, doc) -> list[Section]:
+    def _iter_sections(self, doc, *, keep_image_bytes: bool = True) -> list[Section]:
         from docling.datamodel.document import (
             ListItem,
             PictureItem,
@@ -223,7 +319,10 @@ class DoclingPdfParser(IParser):
             elif isinstance(item, TableItem):
                 section = self._map_table_item(item, current_heading, current_heading_level)
             elif isinstance(item, PictureItem):
-                section = self._map_picture_item(item, doc, current_heading, current_heading_level)
+                section = self._map_picture_item(
+                    item, doc, current_heading, current_heading_level,
+                    keep_image_bytes=keep_image_bytes,
+                )
             elif isinstance(item, ListItem):
                 section = self._map_list_item(item, current_heading, current_heading_level)
             elif isinstance(item, TextItem):
@@ -299,7 +398,13 @@ class DoclingPdfParser(IParser):
         )
 
     def _map_picture_item(
-        self, item, doc, current_heading: str | None, current_heading_level: int
+        self,
+        item,
+        doc,
+        current_heading: str | None,
+        current_heading_level: int,
+        *,
+        keep_image_bytes: bool = True,
     ) -> Section | None:
         img_ref = f"img_{id(item)}.png"
 
@@ -332,7 +437,7 @@ class DoclingPdfParser(IParser):
             heading=current_heading,
             heading_level=current_heading_level,
             page_number=page_number,
-            images=(img_ref,),
+            images=(img_ref,) if keep_image_bytes else (),
             metadata={
                 "docling_type": "PictureItem",
                 "caption": caption,

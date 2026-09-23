@@ -407,6 +407,29 @@ class IMetadataStore(ABC):
         """Update lifecycle state for an asynchronous content-generation request."""
         ...
 
+    @abstractmethod
+    def record_llm_usage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        use_case: str,
+        status: str,
+        course_id: str | None = None,
+        user_id: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float = 0,
+        latency_ms: int | None = None,
+        trace_id: str | None = None,
+    ) -> Result[None, Exception]:
+        """
+        Append one row to llm_usage_logs for cost/latency observability.
+        Best-effort: callers should treat a failure here as non-fatal to the
+        use case that triggered the LLM call.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # LMS / web admin methods
     # ------------------------------------------------------------------

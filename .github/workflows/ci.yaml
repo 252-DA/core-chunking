@@ -1,0 +1,38 @@
+name: packages-ai
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# packages-ai (core-chunking) had no CI workflow before this file — see
+# docs/embedding-service-migration.md §7 in da-platform. worker.yaml only
+# runs worker's own tests/unit, never packages-ai/tests, so this suite was
+# previously not exercised by any CI.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.32"
+
+      # TODO: once 252-DA/service-sdk exists and is tagged v0.1.0, add a
+      # materialize step here (same pattern as worker.yaml) before `uv sync`,
+      # place it at ../service-sdk, and append --extra remote-embedding
+      # below so GrpcEmbedder's tests run in this job.
+      # - uses: 252-DA/service-sdk/.github/actions/materialize@<sha>
+      #   with:
+      #     path: ../service-sdk
+
+      - name: Install deps
+        run: uv sync --locked --python 3.10 --extra embeddings --extra llamaindex
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -q

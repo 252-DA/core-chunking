@@ -63,9 +63,11 @@ class Container:
 
     @cached_property
     def pdf_parser(self) -> IParser:
-        from document_chunk.adapters.parsers.docling_pdf_parser import DoclingPdfParser
-        logger.debug("container.init", component="DoclingPdfParser")
-        return DoclingPdfParser(self._settings.parser)
+        # PyMuPDF đọc trước và đánh giá từng trang; Docling (OCR + layout) chỉ
+        # chạy trên những trang text path không đọc được. Xem adaptive_pdf_parser.
+        from document_chunk.adapters.parsers.adaptive_pdf_parser import AdaptivePdfParser
+        logger.debug("container.init", component="AdaptivePdfParser")
+        return AdaptivePdfParser(self._settings.parser)
 
     @cached_property
     def docx_parser(self) -> IParser:
@@ -101,9 +103,8 @@ class Container:
 
     @cached_property
     def chunker(self) -> IChunker:
-        from document_chunk.adapters.chunkers.heading_chunker import HeadingChunker
-        logger.debug("container.init", component="HeadingChunker")
-        return HeadingChunker(self._settings.chunker)
+        from document_chunk.adapters.chunkers.structural import build_chunker
+        return build_chunker(self._settings.chunker, self._settings.embedder)
 
     # ------------------------------------------------------------------
     # Embedder
@@ -121,6 +122,13 @@ class Container:
         if provider == "openai":
             from document_chunk.adapters.embedders.openai_embedder import OpenAIEmbedder
             return OpenAIEmbedder(self._settings.embedder)
+
+        if provider == "grpc":
+            from document_chunk.adapters.embedders.grpc_embedder import GrpcEmbedder
+            return GrpcEmbedder(
+                self._settings.embedder,
+                expected_dimension=self._settings.qdrant.vector_size,
+            )
 
         raise ValueError(f"Unknown embedder provider: {provider}")
 

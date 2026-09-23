@@ -112,8 +112,9 @@ class TestPostgresMetadataStore:
                 "doc-001",
             )
         ]
-        assert len(cursor.execute_calls) == 1
-        assert "INSERT INTO outbox_events" in cursor.execute_calls[0][0]
+        assert len(cursor.execute_calls) == 2
+        assert "SELECT EXISTS" in cursor.execute_calls[0][0]
+        assert "INSERT INTO outbox_events" in cursor.execute_calls[1][0]
 
     def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(
         self, monkeypatch
@@ -313,3 +314,23 @@ class TestPostgresMetadataStore:
         assert "INSERT INTO quiz_items" in query
         assert "UPDATE quiz_items SET deleted_at" not in query
         assert rows[0][8] == 4
+
+
+def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
+    store = PostgresMetadataStore(SqlConfig(enabled=True))
+    cursor = _FakeCursor()
+    cursor.fetchone_result = (True,)
+    connection = _FakeConnection(cursor)
+    @contextmanager
+    def connect():
+        yield connection
+    monkeypatch.setattr(store, '_connection', connect)
+    result = store.upsert_chunks_with_outbox(
+        [StoredChunkMetadata('new', 'doc', 0)], OutboxEventType.HEADING_GRAPH_PROJECT,
+        'doc', {'replace_chunks': True})
+    assert result.is_ok()
+    cleanup = [(q, p) for q, p in cursor.execute_calls if 'UPDATE chunks SET deleted_at' in q]
+    assert len(cleanup) == 1
+    assert cleanup[0][1] == ('doc', ['new'])
+    assert 'deleted_at = NULL' in cursor.executemany_calls[0][0]
+    assert connection.commit_calls == 1

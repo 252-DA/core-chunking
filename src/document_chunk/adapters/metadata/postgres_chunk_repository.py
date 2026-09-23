@@ -74,6 +74,13 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                                 )
                             )
                         self._upsert_chunks_cursor(cur, chunks)
+                        if payload.get("replace_chunks"):
+                            cur.execute(
+                                """UPDATE chunks SET deleted_at = now()
+                                   WHERE document_id = %s::uuid AND deleted_at IS NULL
+                                     AND NOT (chunk_id = ANY(%s::uuid[]));""",
+                                (document_id, [c.chunk_id for c in chunks]),
+                            )
                         self._append_outbox_event_cursor(
                             cur=cur,
                             event_id=event_id,
@@ -178,7 +185,8 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 heading_path = EXCLUDED.heading_path,
                 page_number = EXCLUDED.page_number,
                 sort_order = EXCLUDED.sort_order,
-                language = EXCLUDED.language;
+                language = EXCLUDED.language,
+                deleted_at = NULL;
             """,
             rows,
         )

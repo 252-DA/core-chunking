@@ -28,7 +28,7 @@ COPY --from=uv /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock README.md ./
 
-RUN uv sync --frozen --no-dev --extra embeddings --extra llamaindex --no-install-project
+RUN uv sync --frozen --no-dev --extra embeddings --extra llamaindex --extra ocr --no-install-project
 
 COPY src/ src/
 

@@ -4,7 +4,9 @@ Domain exceptions — typed errors cho từng layer trong pipeline.
 Hierarchy:
     ChunkingError (base)
     ├── ParseError               — parser không đọc được file
-    │   └── UnsupportedFileTypeError  — không có parser cho loại file này
+    │   ├── UnsupportedFileTypeError  — không có parser cho loại file này
+    │   ├── ParseBudgetExceededError  — file vượt ngân sách xử lý
+    │   └── IncompletePageCoverageError — còn trang chưa đọc được
     ├── ChunkError               — chunker thất bại
     ├── EmbedError               — embedder thất bại
     ├── VectorStoreError         — lỗi lúc upsert / search Qdrant
@@ -51,6 +53,44 @@ class UnsupportedFileTypeError(ParseError):
     def __init__(self, file_type: str) -> None:
         super().__init__(f"No parser available for file type: {file_type!r}")
         self.file_type = file_type
+
+
+class ParseBudgetExceededError(ParseError):
+    """
+    File vượt ngân sách xử lý của một document (dung lượng / số trang / thời gian).
+
+    Khác ParseError thường: file có thể hoàn toàn hợp lệ, chỉ là quá tốn tài
+    nguyên cho một worker. Retry y nguyên sẽ lại vượt — phải nới hạn mức hoặc
+    tách file trước.
+    """
+
+    def __init__(self, message: str, *, limit: str, observed: str | None = None) -> None:
+        super().__init__(message)
+        self.limit = limit
+        self.observed = observed
+
+
+class IncompletePageCoverageError(ParseError):
+    """
+    Parse chạy xong nhưng còn trang chưa backend nào đọc được.
+
+    Không trả "thành công" chỉ vì các trang còn lại có text: phần chưa đọc được
+    phải nêu rõ theo số trang. ``parsed`` giữ nguyên ParsedDocument (kèm
+    ``metadata['page_report']``) để caller kiểm tra hoặc index có kiểm soát.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pages: list[int],
+        page_count: int,
+        parsed: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.pages = pages
+        self.page_count = page_count
+        self.parsed = parsed
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +162,8 @@ __all__ = [
     "ChunkingError",
     "ParseError",
     "UnsupportedFileTypeError",
+    "ParseBudgetExceededError",
+    "IncompletePageCoverageError",
     "ChunkError",
     "EmbedError",
     "VectorStoreError",

@@ -177,6 +177,23 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[None, Exception]:
         return Ok(None)
 
+    def record_llm_usage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        use_case: str,
+        status: str,
+        course_id: str | None = None,
+        user_id: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float = 0,
+        latency_ms: int | None = None,
+        trace_id: str | None = None,
+    ) -> Result[None, Exception]:
+        return Ok(None)
+
     # ------------------------------------------------------------------
     # LMS / web admin methods
     # ------------------------------------------------------------------

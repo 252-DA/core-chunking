@@ -13,12 +13,11 @@ license = {text = "MIT"}
 dependencies = [
     # File type detection
     "python-magic>=0.4.27",
-    # Document parsing
+    # Document parsing — PyMuPDF là fast-path mặc định cho PDF text.
+    # Docling (OCR/layout, nặng) là optional extra "ocr", xem bên dưới.
     "PyMuPDF>=1.24.0",
     "python-pptx>=0.6.23",
     "python-docx>=1.1.0",
-    "marker-pdf>=1.0.0",
-    "docling>=2.0.0",
     # Vector DB
     "qdrant-client>=1.9.0",
     # Metadata DB + Graph DB
@@ -42,6 +41,7 @@ dependencies = [
     "mcp>=1.27,<2",
     # LLM generation
     "google-genai>=1.67.0",
+    "tokenizers>=0.20.0",
     # Utilities
     "numpy>=1.24.0,<2.0.0",
     "tqdm>=4.65.0",
@@ -61,10 +61,29 @@ embeddings = [
     "FlagEmbedding>=1.2.0",
     "sentence-transformers>=2.2.0",
     "openai>=1.0.0",
+    # torch chỉ transitive qua FlagEmbedding/sentence-transformers — liệt kê
+    # trực tiếp ở đây để tool.uv.sources.torch bên dưới thật sự có hiệu lực
+    # (uv chỉ áp override nguồn cho package xuất hiện trực tiếp trong
+    # requirement graph của project đang resolve, không tự lan xuống
+    # transitive dependency dù trùng tên).
+    "torch",
 ]
 llamaindex = [
     "llama-index-core>=0.10.0",
     "llama-index-embeddings-huggingface>=0.3.0",  # cho SemanticSplitter
+    "torch",  # transitive qua llama-index-embeddings-huggingface, lý do như trên
+]
+# DoclingPdfParser — fallback OCR/layout cho scanned PDF khi PyMuPDF không
+# đọc được text layer (xem AdaptivePdfParser). Lazy-imported bên trong
+# DoclingPdfParser._converter, nên thiếu extra này chỉ làm fallback trả về
+# Err(ParseError) thay vì crash — an toàn để bỏ qua khi không cần OCR.
+ocr = [
+    "docling>=2.0.0",
+]
+# GrpcEmbedder — gọi embedding-service qua gRPC thay vì load BGE in-process.
+# Xem docs/embedding-service-migration.md §5/§8 trong da-platform.
+remote-embedding = [
+    "da-service-sdk>=0.1.0,<0.2.0",
 ]
 dev = [
     "pytest>=7.4.0",
@@ -78,8 +97,24 @@ dev = [
     "ipdb>=0.13.13",
 ]
 all = [
-    "document-chunk[embeddings,llamaindex,dev]",
+    "document-chunk[embeddings,llamaindex,remote-embedding,ocr,dev]",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+# Local dev path override — chỉ có hiệu lực khi consumer khác (worker,
+# mcp-service) cũng khai lại override này ở project root của chính họ. uv
+# không tự đọc tool.uv.sources từ pyproject.toml của một path-dependency
+# khác. Xem docs/embedding-service-migration.md §5.4.
+da-service-sdk = { path = "../service-sdk", editable = true }
+# CPU-only wheels — không có GPU passthrough, bản CUDA mặc định tốn ~2GB vô
+# ích. Chỉ có hiệu lực vì "torch" đã được liệt kê trực tiếp ở extras
+# embeddings/llamaindex phía trên.
+torch = [{ index = "pytorch-cpu" }]
 
 [tool.setuptools.packages.find]
 where = ["src"]

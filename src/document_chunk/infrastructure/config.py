@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,6 +94,24 @@ class ParserConfig(BaseSettings):
     pdf_dpi: int = 150
     pdf_max_pages: int | None = None  # None = không giới hạn
 
+    # PDF — ngân sách xử lý cho MỘT tài liệu.
+    # concurrency=1 chỉ chặn số tài liệu song song, không chặn chi phí một file.
+    pdf_max_file_bytes: int | None = 256 * 1024 * 1024   # None = không giới hạn
+    pdf_timeout_seconds: float | None = 600.0            # None = không giới hạn
+    pdf_extract_images: bool = False                      # bytes ảnh: chưa có consumer
+    pdf_max_image_bytes: int = 64 * 1024 * 1024          # chỉ áp khi extract_images=True
+
+    # PDF — ngưỡng đánh giá từng trang (xem pdf_page_assessment.py)
+    pdf_min_page_chars: int = 40          # dưới mức này → trang bị coi là thiếu text
+    pdf_scan_image_coverage: float = 0.5  # độ phủ ảnh ≥ mức này + ít text → trang scan
+    pdf_detect_tables: bool = True        # tìm bảng để route sang layout backend
+
+    # PDF — chính sách fallback và độ đầy đủ
+    pdf_page_fallback_enabled: bool = True    # chạy OCR/layout backend cho trang thiếu
+    pdf_full_fallback_page_ratio: float = 0.5  # ≥ tỉ lệ trang cần fallback → chạy cả file
+    pdf_max_fallback_ranges: int = 8           # số lần gọi layout backend tối đa
+    pdf_strict_missing_text: bool = True       # còn trang chưa ai đọc → Err, không Ok
+
     # PPTX
     pptx_include_notes: bool = True   # include speaker notes vào content
 
@@ -111,6 +129,27 @@ class ParserConfig(BaseSettings):
 
 
 class ChunkerConfig(BaseSettings):
+    strategy: Literal["heading", "structural"] = "heading"
+    target_tokens: int = Field(default=400, ge=8)
+    max_tokens: int = Field(default=512, ge=8)
+    min_tokens: int = Field(default=64, ge=0)
+    overlap_tokens: int = Field(default=48, ge=0)
+    header_max_tokens: int = Field(default=64, ge=0)
+    embed_max_tokens: int = Field(default=1024, ge=8)
+    oversize_tolerance: float = Field(default=1.15, ge=1)
+    tokenizer: str = "BAAI/bge-m3"
+    tokenizer_path: str | None = None
+    index_toc: bool = False
+    merge_across_top_level: bool = False
+
+    @model_validator(mode="after")
+    def validate_budgets(self):
+        if not self.min_tokens <= self.target_tokens <= self.max_tokens:
+            raise ValueError("Require min_tokens <= target_tokens <= max_tokens")
+        if self.max_tokens + self.header_max_tokens + self.overlap_tokens + 2 > self.embed_max_tokens:
+            raise ValueError("Chunk, header, overlap and special tokens exceed embedding budget")
+        return self
+
     max_chunk_size: int = 1500     # chars
     min_chunk_size: int = 100      # chars
     overlap_size: int = 200        # chars
@@ -134,7 +173,10 @@ class LlamaIndexChunkerConfig(BaseSettings):
 
 
 class EmbedderConfig(BaseSettings):
-    provider: Literal["bge", "openai", "sentence_transformers"] = "bge"
+    provider: Literal["bge", "openai", "sentence_transformers", "grpc"] = "bge"
+
+    # Remote embedding-service
+    grpc_target: str = "embedding-service:50051"
 
     # BGE
     bge_model: str = "BAAI/bge-m3"

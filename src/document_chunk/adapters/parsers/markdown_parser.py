@@ -62,6 +62,8 @@ class MarkdownParser(IParser):
         current_lines: list[str] = []
         current_heading: str | None = None
         current_heading_level = 0
+        fence = None
+        block_type = ElementType.PARAGRAPH
 
         def flush_paragraph() -> None:
             content = "\n".join(current_lines).strip()
@@ -69,16 +71,34 @@ class MarkdownParser(IParser):
                 sections.append(
                     Section(
                         content=content,
-                        element_type=ElementType.PARAGRAPH,
+                        element_type=block_type,
                         heading=current_heading,
                         heading_level=current_heading_level,
                     )
                 )
             current_lines.clear()
 
-        for raw_line in text.splitlines():
+        # Front matter is metadata, not document content.
+        text = re.sub(r"\A---[ \t]*\n.*?\n(?:---|\.\.\.)[ \t]*(?:\n|$)", "", text, count=1, flags=re.S)
+        lines = text.splitlines()
+        for line_index, raw_line in enumerate(lines):
             line = raw_line.rstrip()
             stripped = line.strip()
+
+            marker = re.match(r"^(`{3,}|~{3,})(.*)$", stripped)
+            if fence:
+                current_lines.append(raw_line)
+                if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                    flush_paragraph()
+                    fence = None
+                    block_type = ElementType.PARAGRAPH
+                continue
+            if marker:
+                flush_paragraph()
+                fence = marker[1]
+                block_type = ElementType.CODE
+                current_lines.append(raw_line)
+                continue
 
             m = _HEADING_RE.match(stripped)
             if m:
@@ -99,8 +119,20 @@ class MarkdownParser(IParser):
 
             if not stripped:
                 flush_paragraph()
+                block_type = ElementType.PARAGRAPH
                 continue
 
+            is_table = "|" in line and (
+                block_type == ElementType.TABLE or
+                (line_index + 1 < len(lines) and re.fullmatch(r"[\s|:~-]+", lines[line_index + 1]) is not None)
+            )
+            is_list = re.match(r"^\s*(?:[-*+•▪–]|\d+[.)]|[a-zđ][.)])\s+", line)
+            kind = ElementType.TABLE if is_table else ElementType.LIST if is_list else ElementType.PARAGRAPH
+            if block_type == ElementType.LIST and line.startswith(("  ", "\t")):
+                kind = ElementType.LIST
+            if kind != block_type:
+                flush_paragraph()
+                block_type = kind
             current_lines.append(line)
 
         flush_paragraph()

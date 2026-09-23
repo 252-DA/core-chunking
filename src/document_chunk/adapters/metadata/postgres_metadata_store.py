@@ -16,6 +16,9 @@ from document_chunk.adapters.metadata.postgres_document_repository import (
 from document_chunk.adapters.metadata.postgres_enrichment_repository import (
     PostgresEnrichmentRepository,
 )
+from document_chunk.adapters.metadata.postgres_llm_usage_repository import (
+    PostgresLlmUsageRepository,
+)
 from document_chunk.adapters.metadata.postgres_outbox_repository import (
     PostgresOutboxRepository,
 )
@@ -33,6 +36,7 @@ class PostgresMetadataStore(
     PostgresEnrichmentRepository,
     PostgresCurriculumRepository,
     PostgresOutboxRepository,
+    PostgresLlmUsageRepository,
     IMetadataStore,
 ):
     """PostgreSQL metadata facade composed from domain-focused repositories."""
