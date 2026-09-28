@@ -142,11 +142,23 @@ class TestEmbedderConfig:
 
 class TestLlmConfig:
     def test_defaults(self):
+        # provider/model ở đây chỉ còn là đường tương thích cho deployment vẫn
+        # đặt LLM__*; chọn model thật sự là LLM_PROFILE__<TASK> + catalog của
+        # ai-sdk (docs/model-routing-design.md).
         cfg = LlmConfig()
         assert cfg.provider == "gemini"
-        assert cfg.model == "gemini-2.0-flash"
+        assert cfg.model == "gemini-3-flash-preview"
         assert cfg.temperature == 0.2
         assert cfg.timeout_seconds == 60
+
+    def test_reads_the_double_underscore_spelling_only(self, monkeypatch):
+        # Trước đây cả LLM_MODEL và LLM__MODEL đều được nhận cho cùng một field.
+        monkeypatch.setenv("LLM__MODEL", "from-nested")
+        monkeypatch.setenv("LLM_MODEL", "from-single")
+        assert LlmConfig().model == "from-nested"
+
+        monkeypatch.delenv("LLM__MODEL")
+        assert LlmConfig().model == "gemini-3-flash-preview"
 
 
 class TestTracingConfig:

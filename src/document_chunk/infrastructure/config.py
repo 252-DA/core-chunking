@@ -199,8 +199,21 @@ class EmbedderConfig(BaseSettings):
 
 
 class LlmConfig(BaseSettings):
+    """
+    Cấu hình LLM còn lại sau khi chọn model chuyển sang catalog của ai-sdk.
+
+    Chọn model giờ là ``LLM_PROFILE__<TASK>`` (xem docs/model-routing-design.md);
+    các field provider/model/api_key dưới đây chỉ còn là đường tương thích cho
+    deployment vẫn đặt ``LLM__*``, và ``max_section_chars`` không liên quan tới
+    model nên vẫn thuộc về đây.
+
+    env_prefix dùng "LLM__" chứ không phải "LLM_": prefix của sub-config và
+    env_nested_delimiter của Settings vốn nhận cả hai chính tả cho cùng một
+    biến, và "LLM__" là chính tả mà compose đang dùng.
+    """
+
     provider: Literal["gemini", "openai-compatible", "deepseek"] = "gemini"
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3-flash-preview"
     api_key: str | None = None
     base_url: str | None = None
     temperature: float = 0.2
@@ -208,7 +221,7 @@ class LlmConfig(BaseSettings):
     max_retries: int = 2
     max_section_chars: int = 6000
 
-    model_config = SettingsConfigDict(env_prefix="LLM_")
+    model_config = SettingsConfigDict(env_prefix="LLM__")
 
 
 class TracingConfig(BaseSettings):
