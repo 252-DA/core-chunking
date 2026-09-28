@@ -10,6 +10,9 @@ from document_chunk.adapters.metadata.postgres_chunk_repository import (
 from document_chunk.adapters.metadata.postgres_curriculum_repository import (
     PostgresCurriculumRepository,
 )
+from document_chunk.adapters.metadata.postgres_document_placement_repository import (
+    PostgresDocumentPlacementRepository,
+)
 from document_chunk.adapters.metadata.postgres_document_repository import (
     PostgresDocumentRepository,
 )
@@ -35,6 +38,7 @@ class PostgresMetadataStore(
     PostgresChunkRepository,
     PostgresEnrichmentRepository,
     PostgresCurriculumRepository,
+    PostgresDocumentPlacementRepository,
     PostgresOutboxRepository,
     PostgresLlmUsageRepository,
     IMetadataStore,

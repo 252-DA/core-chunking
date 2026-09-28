@@ -133,6 +133,8 @@ class StoredChapter:
     title_en: str | None = None
     source_section: str | None = None
     source_page: int | None = None
+    # Mục con của chương, nối bằng "; " — xem Chapter.topics.
+    topics: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,21 @@ class StoredChunkLOMapping:
     confidence: float
     source: str
     provenance: str = "inferred"
+
+
+@dataclass(frozen=True)
+class StoredDocumentPlacement:
+    """Vai trò và chương của một tài liệu trong học phần.
+
+    role: lecture | reference | exercise. chapter_provenance: module | file_name |
+    content | confirmed — nguồn gốc của chương, None khi chưa xác định.
+    """
+    document_id: str
+    course_id: str
+    role: str = "lecture"
+    chapter_code: str | None = None
+    chapter_provenance: str | None = None
+    chapter_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -483,7 +500,33 @@ class IMetadataStore(ABC):
     def list_chunks_for_lo(
         self, lo_id: str
     ) -> Result[builtins.list[StoredChunkMetadata], Exception]:
-        """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
+        """Lấy chunks đã map tới lo_id: tài liệu bài giảng trước tài liệu tham khảo,
+        rồi theo confidence DESC."""
+        ...
+
+    # -- Vị trí của tài liệu trong học phần (vai trò + chương) --
+
+    @abstractmethod
+    def get_document_placement(
+        self, document_id: str
+    ) -> Result["StoredDocumentPlacement | None", Exception]:
+        ...
+
+    @abstractmethod
+    def set_document_chapter(
+        self,
+        document_id: str,
+        chapter_code: str,
+        provenance: str,
+        confidence: float,
+        reason: str,
+    ) -> Result[bool, Exception]:
+        """Ghi chương do hệ thống xác định; không bao giờ đè chương giảng viên đã chọn."""
+        ...
+
+    @abstractmethod
+    def delete_inferred_chunk_lo_mappings(self, document_id: str) -> Result[int, Exception]:
+        """Xoá cạnh chunk → LO do hệ thống suy ra của một tài liệu (giữ cạnh đã xác nhận)."""
         ...
 
     @abstractmethod

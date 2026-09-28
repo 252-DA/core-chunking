@@ -182,6 +182,15 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[list[StoredChunkMetadata], Exception]:
         return Ok([])
 
+    def get_document_placement(self, document_id: str):
+        return Ok(None)
+
+    def set_document_chapter(self, document_id, chapter_code, provenance, confidence, reason):
+        return Ok(False)
+
+    def delete_inferred_chunk_lo_mappings(self, document_id: str):
+        return Ok(0)
+
     def update_content_generation_request(
         self,
         request_id: str,

@@ -45,6 +45,9 @@ class QdrantConfig(BaseSettings):
     host: str = "localhost"
     port: int = 6333
     api_key: str | None = None
+    # qdrant-client tự bật HTTPS khi có api_key mà không nói gì về https; Qdrant
+    # trên máy DB (qua Tailscale) chỉ nghe HTTP nên phải tắt tường minh.
+    https: bool = False
     collection_name: str = "documents"
     vector_size: int = 1024  # BGE-M3 default
 

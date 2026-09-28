@@ -58,6 +58,7 @@ class QdrantAdapter(IVectorStore):
             host=self._config.host,
             port=self._config.port,
             api_key=self._config.api_key,
+            https=self._config.https,
             timeout=30,
         )
         logger.info(

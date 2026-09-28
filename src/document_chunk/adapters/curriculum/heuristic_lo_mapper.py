@@ -16,16 +16,23 @@ import unicodedata
 
 from document_chunk.domain.entities.curriculum import Chapter, Curriculum
 from document_chunk.domain.exceptions import ProcessingError
-from document_chunk.domain.ports.chunk_lo_mapper import ChunkLOMapping, IChunkLOMapper
+from document_chunk.domain.ports.chunk_lo_mapper import ChunkLOMapping, IChunkLOMapper, MappingHints
 from document_chunk.domain.ports.metadata_store import StoredChunkMetadata
 from document_chunk.shared.logger import get_logger
 from document_chunk.shared.result import Err, Ok, Result
 
 logger = get_logger(__name__)
 
-# Chỉ nhận số chương khi có từ khoá "Chương"/"Chapter" đi kèm. Một số trần như
-# "3.6" trong "3.6 Bước 4: ..." là mục con của giáo trình, không phải chương.
-_RE_CHAPTER_WORD = re.compile(r"(?:chương|chapter)\s*0*(\d+)", re.IGNORECASE)
+# Chỉ nhận số chương khi có từ khoá đi kèm. Một số trần như "3.6" trong
+# "3.6 Bước 4: ..." là mục con của giáo trình, không phải chương.
+#
+# Slide của giảng viên hiếm khi ghi đúng chữ "Chương": thực tế gặp "Bài 4",
+# "Chapter 4", "Lecture 4", "Tuần 4", "Buổi 4". Nhận cả các biến thể này.
+_CHAPTER_WORDS = ("chương", "chuong", "chapter", "bài", "bai", "lecture", "tuần", "tuan", "buổi", "buoi", "unit")
+_RE_CHAPTER_WORD = re.compile(
+    r"(?:" + "|".join(_CHAPTER_WORDS) + r")\s*[.:\-]?\s*0*(\d+)",
+    re.IGNORECASE,
+)
 
 # Ngưỡng: chỉ-chương → ứng viên yếu; chương + tiêu đề khớp nội dung LO → mạnh hơn.
 _CONF_CHAPTER_ONLY = 0.5
@@ -58,7 +65,9 @@ class HeuristicLoMapper(IChunkLOMapper):
         self,
         chunks: list[StoredChunkMetadata],
         curriculum: Curriculum,
+        hints: MappingHints | None = None,
     ) -> Result[list[ChunkLOMapping], Exception]:
+        hints = hints or MappingHints()
         try:
             if not curriculum.chapter_lo_links:
                 logger.warning(
@@ -73,9 +82,7 @@ class HeuristicLoMapper(IChunkLOMapper):
             matched_chunks = 0
 
             for chunk in chunks:
-                if not chunk.heading_path:
-                    continue
-                chapter = self._detect_chapter(chunk.heading_path, curriculum)
+                chapter, origin = self._chapter_for(chunk, curriculum, hints)
                 if chapter is None:
                     continue
                 matched_chunks += 1
@@ -90,10 +97,10 @@ class HeuristicLoMapper(IChunkLOMapper):
 
                     lo = curriculum.lo_by_code[lo_code]
                     confidence = _CONF_CHAPTER_ONLY
-                    source = "chapter"
+                    source = origin
                     if self._heading_matches_lo(heading_words, lo.statement_vi):
                         confidence = _CONF_CHAPTER_AND_HEADING
-                        source = "chapter+heading"
+                        source = f"{origin}+heading"
 
                     key = (chunk.chunk_id, lo_id)
                     existing = mappings.get(key)
@@ -118,6 +125,24 @@ class HeuristicLoMapper(IChunkLOMapper):
             return Err(ProcessingError("HeuristicLoMapper failed", cause=exc))
 
     # ------------------------------------------------------------------
+
+    def _chapter_for(
+        self, chunk: StoredChunkMetadata, curriculum: Curriculum, hints: MappingHints
+    ) -> tuple[Chapter | None, str]:
+        """Chương của chunk và nguồn của quyết định ("section" | "document" | "chapter")."""
+        by_code = curriculum.chapter_by_code
+        if (code := hints.chunk_chapters.get(chunk.chunk_id)) is not None:
+            return by_code.get(code), "section"
+        if hints.role == "reference":
+            # Sách tham khảo đánh số chương theo sách chứ không theo đề cương:
+            # "Chapter 3" của Mining of Massive Datasets là chương 2 của học
+            # phần. Đoán theo số sẽ gắn sai, nên chỉ tin phần đã khớp nội dung.
+            return None, ""
+        if hints.document_chapter is not None:
+            return by_code.get(hints.document_chapter), "document"
+        if not chunk.heading_path:
+            return None, ""
+        return self._detect_chapter(chunk.heading_path, curriculum), "chapter"
 
     def _detect_chapter(
         self, heading_path: tuple[str, ...], curriculum: Curriculum

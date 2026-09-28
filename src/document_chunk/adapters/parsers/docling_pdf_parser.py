@@ -296,7 +296,9 @@ class DoclingPdfParser(IParser):
     # ------------------------------------------------------------------
 
     def _iter_sections(self, doc, *, keep_image_bytes: bool = True) -> list[Section]:
-        from docling.datamodel.document import (
+        # Kiểu item nằm ở docling_core; docling.datamodel.document chỉ re-export
+        # và đã bỏ ListItem ở docling 2.118.
+        from docling_core.types.doc import (
             ListItem,
             PictureItem,
             SectionHeaderItem,
@@ -467,7 +469,7 @@ class DoclingPdfParser(IParser):
     # ------------------------------------------------------------------
 
     def _extract_images(self, doc) -> dict[str, bytes]:
-        from docling.datamodel.document import PictureItem
+        from docling_core.types.doc import PictureItem
 
         images: dict[str, bytes] = {}
         for item, _ in doc.iterate_items():

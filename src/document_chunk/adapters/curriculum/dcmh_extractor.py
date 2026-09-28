@@ -84,7 +84,15 @@ _RE_ROW_LINK = re.compile(
     r"L\.O\.(?P<lo>\d+(?:\.\d+)*)\s*\[(?P<aos>[^\]]*)\]"
 )
 _RE_CHAPTER_CELL = re.compile(r"Chương\s*(?P<num>\d+)", re.IGNORECASE)
-_RE_SESSION_CELL = re.compile(r"^(?P<num>\d+)$")
+# Ô Buổi ghi một buổi ("7") hoặc một chương kéo dài nhiều buổi ("13, 14").
+_RE_SESSION_CELL = re.compile(r"^(?P<num>\d+)(?:\s*[,–-]\s*(?P<last>\d+))?$")
+# Mẫu CO3137: ô Buổi chỉ ghi số, chương nằm ở dòng đầu ô Nội dung —
+# "Chương 1. Giới thiệu" / "Chương 14: Ôn tập".
+_RE_CHAPTER_HEADING = re.compile(r"^Chương\s*(?P<num>\d+)\s*[.:]?\s*(?P<title>.*)$", re.IGNORECASE)
+_RE_SUBSECTION = re.compile(r"^\d+(?:\.\d+)+\.?\s")
+_RE_SUBSECTION_TITLE = re.compile(r"^\d+(?:\.\d+)+\.?\s+(?P<title>\S.*)$")
+# Tiền tố bản tiếng Anh: "Chapter 1. Introduction" (có bản gõ thiếu chữ C: "hapter 2.").
+_RE_CHAPTER_EN_PREFIX = re.compile(r"^C?hapter\s*\d+\s*[.:]?\s*", re.IGNORECASE)
 _RE_LEADING_NUM = re.compile(r"^(?P<num>\d+)\s+(?P<title>\S.*)$")
 
 _RE_COURSE_CODE = re.compile(r"Mã học phần[^:]*:\s*(?P<code>[A-Z]{2}\d{3,5})")
@@ -101,6 +109,17 @@ _INVISIBLE = re.compile(r"[\ufeff\u200b\u200c\u200d\u2060]")
 
 def _norm(text: str) -> str:
     return _WS.sub(" ", _INVISIBLE.sub("", text or "")).strip()
+
+
+def _merge_topics(existing: tuple[str, ...], new: tuple[str, ...]) -> tuple[str, ...]:
+    """Nối danh sách mục con, bỏ trùng không phân biệt hoa thường (VI và EN hay trùng tên)."""
+    seen = {t.lower() for t in existing}
+    merged = list(existing)
+    for topic in new:
+        if topic and topic.lower() not in seen:
+            seen.add(topic.lower())
+            merged.append(topic)
+    return tuple(merged)
 
 
 def _split_bilingual(block: str) -> tuple[str, str | None]:
@@ -461,6 +480,7 @@ class DcmhExtractor(ICurriculumExtractor):
 
         rows: list[SyllabusRow] = []
         order = 0
+        next_session = 1
         for table in tables:
             for ri, raw in enumerate(table.rows):
                 if len(raw) < 3:
@@ -478,38 +498,50 @@ class DcmhExtractor(ICurriculumExtractor):
                 source = SourceRef(section="6", page=table.page, locator=table.locator(ri))
                 chapter_code = None
                 session_no = None
+                last_session = None
                 if (mc := _RE_CHAPTER_CELL.search(label)):
+                    # Mẫu CO3011: ô Buổi ghi "Chương 7".
                     chapter_code = mc.group("num")
                 elif (ms := _RE_SESSION_CELL.match(label)):
                     session_no = int(ms.group("num"))
+                    last_session = int(ms.group("last") or session_no)
+                    first_line = next((ln.strip() for ln in (content or "").splitlines() if ln.strip()), "")
+                    if (mh := _RE_CHAPTER_HEADING.match(first_line)):
+                        chapter_code = mh.group("num")
                 else:
                     ctx.add("session.unreadable_label", "warning",
                             f"Không hiểu ô cột Buổi: {label!r}.", source)
+
+                if session_no is not None and session_no != next_session:
+                    ctx.add("session.number_mismatch", "warning",
+                            f"Buổi ghi {session_no} nhưng buổi kế tiếp phải là {next_session}.", source)
+                session_no = session_no if session_no is not None else next_session
+                next_session = (last_session or session_no) + 1
 
                 title_vi, title_en = self._row_title(content, chapter_code)
                 lo_codes, ao_codes = self._row_links(activity)
 
                 rows.append(SyllabusRow(
                     order_index=order,
-                    session_no=session_no if session_no is not None else order,
+                    session_no=session_no,
                     chapter_code=chapter_code,
                     title_vi=title_vi,
                     title_en=title_en,
                     lo_codes=lo_codes,
                     assessment_codes=ao_codes,
                     source=source,
+                    topics=self._row_topics(content),
                 ))
-
-                if session_no is not None and session_no != order:
-                    ctx.add("session.number_mismatch", "warning",
-                            f"Buổi ghi {session_no} nhưng đứng ở vị trí hàng {order}.", source)
         return rows
 
     def _is_session_table(self, table: LayoutTable) -> bool:
-        if not table.rows:
-            return False
-        head = _norm(" ".join(table.rows[0])).lower()
-        return "buổi" in head or "session" in head
+        # Bảng bị ngắt trang có thể mở đầu bằng một hàng rỗng (đường kẻ trên
+        # cùng) trước hàng tiêu đề lặp lại, nên xét vài hàng đầu chứ không chỉ một.
+        for row in table.rows[:3]:
+            head = _norm(" ".join(row)).lower()
+            if head:
+                return "buổi" in head or "session" in head
+        return False
 
     def _is_header_row(self, label: str, content: str) -> bool:
         low = f"{label} {_norm(content)}".lower()
@@ -527,15 +559,32 @@ class DcmhExtractor(ICurriculumExtractor):
             lo_codes=tuple(dict.fromkeys(row.lo_codes + lo_codes)),
             assessment_codes=tuple(dict.fromkeys(row.assessment_codes + ao_codes)),
             source=row.source,
+            topics=_merge_topics(row.topics, self._row_topics(content)),
         )
+
+    def _row_topics(self, content: str) -> tuple[str, ...]:
+        """Mục con trong ô Nội dung, cả bản tiếng Việt lẫn tiếng Anh."""
+        topics: list[str] = []
+        for line in (content or "").splitlines():
+            if (m := _RE_SUBSECTION_TITLE.match(line.strip())):
+                topics.append(_norm(m.group("title").rstrip(")").strip()))
+        return _merge_topics((), tuple(topics))
 
     def _row_title(self, content: str, chapter_code: str | None) -> tuple[str, str | None]:
         lines = [ln.strip() for ln in (content or "").splitlines() if ln.strip()]
         if not lines:
             return "", None
         first = lines[0]
+        # Tên dài xuống dòng trong ô ("…dùng cấu" / "trúc dữ liệu xác suất"): nối
+        # tiếp cho tới mục con ("6.1.") hoặc bản tiếng Anh ("(Chapter 6…").
+        for ln in lines[1:]:
+            if ln.startswith("(") or _RE_SUBSECTION.match(ln):
+                break
+            first = f"{first} {ln}"
         if (m := _RE_LEADING_NUM.match(first)):
             title_vi = _norm(m.group("title"))
+        elif (mh := _RE_CHAPTER_HEADING.match(first)):
+            title_vi = _norm(mh.group("title"))
         else:
             title_vi = _norm(first)
 
@@ -548,7 +597,7 @@ class DcmhExtractor(ICurriculumExtractor):
         if title_en is None:
             for ln in lines[1:]:
                 if ln.startswith("("):
-                    title_en = _norm(ln.lstrip("(").rstrip(")"))
+                    title_en = _norm(_RE_CHAPTER_EN_PREFIX.sub("", ln.lstrip("(").rstrip(")")))
                     break
         return title_vi, title_en
 
@@ -568,6 +617,14 @@ class DcmhExtractor(ICurriculumExtractor):
     def _chapters_from_rows(
         self, ctx: _Ctx, course_id: str, rows: list[SyllabusRow]
     ) -> list[Chapter]:
+        # Một chương có thể trải nhiều hàng; mục con gom từ tất cả các hàng đó.
+        topics_by_chapter: dict[str, tuple[str, ...]] = {}
+        for row in rows:
+            if row.chapter_code is not None:
+                topics_by_chapter[row.chapter_code] = _merge_topics(
+                    topics_by_chapter.get(row.chapter_code, ()), row.topics
+                )
+
         chapters: list[Chapter] = []
         seen: set[str] = set()
         for row in rows:
@@ -581,6 +638,7 @@ class DcmhExtractor(ICurriculumExtractor):
                 title_en=row.title_en,
                 order_index=int(row.chapter_code),
                 source=row.source,
+                topics=topics_by_chapter[row.chapter_code],
             ))
         return sorted(chapters, key=lambda c: c.order_index)
 

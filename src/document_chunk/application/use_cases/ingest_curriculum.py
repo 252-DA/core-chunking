@@ -88,10 +88,8 @@ class IngestCurriculumUseCase:
         # Postgres rồi thì mọi thứ dựng trên nó (bài học, quiz) đều lệch theo.
         self._persist_on_blocking_issues = persist_on_blocking_issues
 
-    def execute(
-        self, request: IngestCurriculumRequest
-    ) -> Result[IngestCurriculumResponse, Exception]:
-        # 1. Parse file
+    def extract(self, request: IngestCurriculumRequest) -> Result[Curriculum, Exception]:
+        """Parse + trích xuất, không ghi gì — dùng cho bản xem trước trước khi áp dụng."""
         parser = self._resolve_parser(request.file_name)
         if parser is None:
             return Err(ProcessingError(f"No parser for file: {request.file_name}"))
@@ -100,10 +98,13 @@ class IngestCurriculumUseCase:
         if parse_result.is_err():
             return Err(parse_result.error)
 
-        parsed_doc = parse_result.unwrap()
+        return self._extractor.extract(parse_result.unwrap(), course_id_hint=request.course_id)
 
-        # 2. Extract curriculum
-        extract_result = self._extractor.extract(parsed_doc, course_id_hint=request.course_id)
+    def execute(
+        self, request: IngestCurriculumRequest
+    ) -> Result[IngestCurriculumResponse, Exception]:
+        # 1–2. Parse file + extract curriculum
+        extract_result = self.extract(request)
         if extract_result.is_err():
             return Err(extract_result.error)
 
@@ -203,6 +204,7 @@ class IngestCurriculumUseCase:
                 title_en=ch.title_en,
                 source_section=ch.source.section if ch.source else None,
                 source_page=ch.source.page if ch.source else None,
+                topics="; ".join(ch.topics) or None,
             )
             for ch in curriculum.chapters
         ]

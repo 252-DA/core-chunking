@@ -70,6 +70,9 @@ class Chapter:
     order_index: int = 0
     title_en: str | None = None
     source: SourceRef | None = None
+    # Mục con của chương trong bảng mục 6 ("Min-hashing", "Locality sensitive
+    # hashing") — tín hiệu để khớp nội dung tài liệu với chương.
+    topics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,7 @@ class SyllabusRow:
     lo_codes: tuple[str, ...] = ()
     assessment_codes: tuple[str, ...] = ()
     source: SourceRef | None = None
+    topics: tuple[str, ...] = ()
 
     @property
     def is_chapter(self) -> bool:

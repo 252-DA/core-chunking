@@ -7,6 +7,7 @@ from document_chunk.adapters.metadata.postgres_repository_utils import (
     PostgresRepositoryBase,
     stable_uuid,
 )
+from document_chunk.domain.bloom import bloom_to_level
 from document_chunk.domain.exceptions import MetadataStoreError
 from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
@@ -89,7 +90,12 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             source_chunk_ids = EXCLUDED.source_chunk_ids,
                             status = 'GENERATED_DRAFT',
                             updated_at = NOW(),
-                            deleted_at = NULL;
+                            deleted_at = NULL
+                        -- quiz_id nay tat dinh theo (LO, noi dung cau hoi), nen
+                        -- worker retry se roi vao nhanh nay. Chi ghi de khi cau
+                        -- hoi van con la ban nhap: mot cau da duyet hoac da xuat
+                        -- ban khong duoc lang le tut ve GENERATED_DRAFT.
+                        WHERE quiz_items.status = 'GENERATED_DRAFT';
                         """,
                         [
                             (
@@ -148,7 +154,9 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                     # `courses.code` cũng là khoá unique, nên một học phần do
                     # LMS tạo trước sẽ có course_id khác stable_uuid(code). Bám
                     # theo hàng đang có thay vì chèn thêm một học phần trùng mã.
-                    course_uuid = self._course_uuid(cur, course.code)
+                    # course_id đi trước: worker truyền UUID của học phần LMS,
+                    # mà học phần đó mang mã "canvas-…" chứ không phải mã DCMH.
+                    course_uuid = self._course_uuid(cur, course.course_id or course.code)
 
                     cur.execute(
                         """
@@ -175,9 +183,9 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             """
                             INSERT INTO chapters (
                                 chapter_id, course_id, code, title, title_en,
-                                sort_order, source_section, source_page, deleted_at
+                                sort_order, source_section, source_page, topics, deleted_at
                             )
-                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, NULL)
+                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, NULL)
                             ON CONFLICT (chapter_id) DO UPDATE SET
                                 code = EXCLUDED.code,
                                 title = EXCLUDED.title,
@@ -185,6 +193,7 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                                 sort_order = EXCLUDED.sort_order,
                                 source_section = EXCLUDED.source_section,
                                 source_page = EXCLUDED.source_page,
+                                topics = EXCLUDED.topics,
                                 deleted_at = NULL;
                             """,
                             [
@@ -197,6 +206,7 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                                     c.order_index,
                                     c.source_section,
                                     c.source_page,
+                                    c.topics,
                                 )
                                 for c in chapters
                             ],
@@ -461,7 +471,8 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
 
                     cur.execute(
                         """
-                        SELECT chapter_id::text, course_id::text, title, sort_order, code, title_en
+                        SELECT chapter_id::text, course_id::text, title, sort_order, code, title_en,
+                               topics
                         FROM chapters
                         WHERE course_id = %s::uuid
                           AND deleted_at IS NULL
@@ -477,6 +488,7 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             title=r[2],
                             order_index=r[3],
                             title_en=r[5],
+                            topics=r[6],
                         )
                         for r in cur.fetchall()
                     ]
@@ -713,9 +725,13 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                                c.content, NULL AS embedding_input
                         FROM chunk_lo_mappings clm
                         JOIN chunks c ON c.chunk_id = clm.chunk_id
+                        JOIN documents d ON d.document_id = c.document_id
                         WHERE clm.lo_id = %s::uuid
                           AND c.deleted_at IS NULL
-                        ORDER BY clm.confidence DESC;
+                          AND d.deleted_at IS NULL
+                        -- Bài giảng là nguồn chính; tài liệu tham khảo chỉ bổ
+                        -- sung khi bài giảng không đủ chunk cho LO này.
+                        ORDER BY (d.role = 'reference'), clm.confidence DESC;
                         """,
                         (lo_id,),
                     )
@@ -812,16 +828,11 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
         """
         None khi không biết — KHÔNG mặc định về 2 ("understand").
 
-        Đề cương định dạng này không ghi Bloom. Trả về một mức mặc định sẽ khiến
-        cột bloom_level luôn chứa dữ liệu bịa mà không cách nào phân biệt với
-        giá trị thật.
+        Quy đổi nằm ở `domain.bloom` để cả đường ghi LO lẫn đường ghi quiz dùng
+        chung một cách hiểu; trước đây mỗi nơi tự quy đổi nên "3" (INT đọc lên
+        rồi bị str()) không khớp bảng tên và rơi về 2.
         """
-        if isinstance(value, int) and 1 <= value <= 6:
-            return value
-        return {
-            "remember": 1, "understand": 2, "apply": 3,
-            "analyze": 4, "evaluate": 5, "create": 6,
-        }.get(str(value or "").lower())
+        return bloom_to_level(value)
 
     def _cdio_level(self, value: str | int | None) -> str | None:
         """None khi không biết — CDIO cũng không có trong đề cương."""

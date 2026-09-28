@@ -57,6 +57,7 @@ class GenerateCurriculumQuizRequest:
     style: str = "quiz"
     bloom_level: str | None = None
     count: int = 5
+    source_document_ids: list[str] | None = None
 
 
 @dataclass

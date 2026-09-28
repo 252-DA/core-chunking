@@ -1,7 +1,7 @@
 from functools import cached_property
 
 from document_chunk.domain.exceptions import LLMError
-from document_chunk.domain.ports.llm_client import ILLMClient
+from document_chunk.domain.ports.llm_client import ILLMClient, LLMUsage
 from document_chunk.infrastructure.config import LlmConfig
 from document_chunk.shared.logger import get_logger
 from document_chunk.shared.result import Err, Ok, Result
@@ -42,6 +42,16 @@ class GeminiLLMClient(ILLMClient):
         prompt: str,
         system: str | None = None,
     ) -> Result[str, Exception]:
+        result = self.generate_with_usage(prompt, system=system)
+        if result.is_err():
+            return result
+        return Ok(result.unwrap()[0])
+
+    def generate_with_usage(
+        self,
+        prompt: str,
+        system: str | None = None,
+    ) -> Result[tuple[str, LLMUsage], Exception]:
         if not self._config.api_key:
             return Err(LLMError("LLM API key is not configured"))
 
@@ -58,7 +68,7 @@ class GeminiLLMClient(ILLMClient):
             )
             text = getattr(response, "text", None)
             if text and text.strip():
-                return Ok(text.strip())
+                return Ok((text.strip(), self._usage_of(response)))
             return Err(LLMError("Gemini returned an empty response"))
         except Exception as exc:
             logger.error(
@@ -67,3 +77,14 @@ class GeminiLLMClient(ILLMClient):
                 error=str(exc),
             )
             return Err(LLMError("Gemini generation failed", cause=exc))
+
+    @staticmethod
+    def _usage_of(response) -> LLMUsage:
+        """Đọc token từ `usage_metadata`; thiếu trường nào thì coi như 0."""
+        meta = getattr(response, "usage_metadata", None)
+        if meta is None:
+            return LLMUsage()
+        return LLMUsage(
+            prompt_tokens=int(getattr(meta, "prompt_token_count", 0) or 0),
+            completion_tokens=int(getattr(meta, "candidates_token_count", 0) or 0),
+        )
