@@ -12,6 +12,7 @@ class SearchFilter:
     Dùng để narrow down search space — filter ở metadata DB (sau này)
     hoặc ở Qdrant payload filter (trước mắt).
     """
+    exclude_content_types: tuple[str, ...] = ("toc",)
     doc_types: tuple[DocumentType, ...] = ()     # [] = không filter
     document_ids: tuple[str, ...] = ()           # filter theo document cụ thể
     language: str | None = None                  # "vi", "en", None = all

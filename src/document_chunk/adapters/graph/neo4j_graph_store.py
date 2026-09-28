@@ -4,6 +4,7 @@ from document_chunk.domain.exceptions import GraphStoreError
 from document_chunk.domain.ports.graph_store import (
     GraphAssessment,
     GraphChapter,
+    GraphChapterLOEdge,
     GraphChunk,
     GraphChunkConcept,
     GraphChunkLOEdge,
@@ -495,6 +496,7 @@ class Neo4jGraphStore(IGraphStore):
         los: list[GraphLO],
         assessments: list[GraphAssessment],
         lo_assessment_links: list[tuple[str, str]],
+        chapter_lo_links: list[GraphChapterLOEdge] | None = None,
     ) -> Result[None, Exception]:
         with tracer.start_as_current_span("neo4j.upsert_curriculum_graph") as span:
             span.set_attribute("course_id", course_id)
@@ -517,6 +519,11 @@ class Neo4jGraphStore(IGraphStore):
                         ],
                         [{"id": a.assessment_id, "code": a.code, "name_vi": a.name_vi, "category": a.category, "weight": a.weight} for a in assessments],
                         [{"lo_id": link[0], "assessment_id": link[1]} for link in lo_assessment_links],
+                        [
+                            {"chapter_id": e.chapter_id, "lo_id": e.lo_id,
+                             "provenance": e.provenance}
+                            for e in (chapter_lo_links or [])
+                        ],
                     )
                 return Ok(None)
             except Exception as exc:
@@ -582,6 +589,7 @@ class Neo4jGraphStore(IGraphStore):
         los: list[dict],
         assessments: list[dict],
         lo_assessment_links: list[dict],
+        chapter_lo_links: list[dict] | None = None,
     ) -> None:
         tx.run(
             """
@@ -625,11 +633,11 @@ class Neo4jGraphStore(IGraphStore):
             """
             UNWIND $los AS lo
             WITH lo WHERE lo.parent_code IS NOT NULL
-            MATCH (parent:LearningOutcome {code: lo.parent_code})
+            MATCH (course:Course {id: $course_id})-[:HAS_LO]->(parent:LearningOutcome {code: lo.parent_code})
             MATCH (child:LearningOutcome {id: lo.id})
             MERGE (parent)-[:PARENT_OF]->(child)
             """,
-            los=los,
+            course_id=course_id, los=los,
         )
 
         tx.run(
@@ -655,6 +663,20 @@ class Neo4jGraphStore(IGraphStore):
                 MERGE (l)-[:EVALUATED_BY]->(a)
                 """,
                 links=lo_assessment_links,
+            )
+
+        # Chương → LO, nhiều–nhiều, chiếu từ bảng mục 6. Trước đây đồ thị không
+        # có cạnh này nên không trả lời được "chương 7 dạy chuẩn đầu ra nào".
+        if chapter_lo_links:
+            tx.run(
+                """
+                UNWIND $links AS link
+                MATCH (ch:Chapter {id: link.chapter_id})
+                MATCH (l:LearningOutcome {id: link.lo_id})
+                MERGE (ch)-[r:COVERS]->(l)
+                SET r.provenance = link.provenance, r.updated_at = datetime()
+                """,
+                links=chapter_lo_links,
             )
 
     @staticmethod

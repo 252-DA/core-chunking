@@ -42,6 +42,7 @@ class NoopGraphStore(IGraphStore):
         los: list[GraphLO],
         assessments: list[GraphAssessment],
         lo_assessment_links: list[tuple[str, str]],
+        chapter_lo_links: list | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
 

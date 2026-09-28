@@ -78,7 +78,8 @@ class PptxParser(IParser):
 
         for slide_num, slide in enumerate(prs.slides, start=1):
             title = self._get_slide_title(slide)
-            body_text = self._get_body_text(slide)
+            blocks = self._get_blocks(slide)
+            body_text = "\n\n".join(block["text"] for block in blocks)
             notes_text = self._get_notes_text(slide)
             slide_images = self._extract_slide_images(slide, slide_num, images)
 
@@ -97,7 +98,8 @@ class PptxParser(IParser):
                 heading_level=1 if title else 0,
                 page_number=slide_num,
                 images=tuple(slide_images),
-                metadata={"slide_number": slide_num, "total_slides": slide_count},
+                metadata={"slide_number": slide_num, "total_slides": slide_count,
+                          "blocks": blocks + ([{"kind": "notes", "text": notes_text}] if notes_text else [])},
             ))
 
         document = Document(
@@ -114,6 +116,7 @@ class PptxParser(IParser):
             sections=sections,
             page_count=slide_count,
             images=images,
+            metadata={"title": prs.core_properties.title or ""},
         )
 
     # ------------------------------------------------------------------
@@ -144,6 +147,25 @@ class PptxParser(IParser):
                     return text
 
         return None
+
+    def _get_blocks(self, slide) -> list[dict]:
+        blocks = []
+        for shape in sorted(slide.shapes, key=lambda s: (s.top, s.left)):
+            if shape.has_table:
+                rows = [" | ".join(cell.text.replace("\n", " ") for cell in row.cells) for row in shape.table.rows]
+                if rows:
+                    rows.insert(1, " | ".join(["---"] * len(shape.table.columns)))
+                    blocks.append({"kind": "table", "text": "\n".join(rows)})
+            elif shape.has_text_frame:
+                if shape.is_placeholder and shape.placeholder_format.type in (
+                    PP_PLACEHOLDER_TYPE.TITLE, PP_PLACEHOLDER_TYPE.CENTER_TITLE,
+                ):
+                    continue
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        blocks.append({"kind": "list" if para.level else "text", "text": text})
+        return blocks
 
     def _get_body_text(self, slide) -> str:
         """

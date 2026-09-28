@@ -1,11 +1,9 @@
-"""BullMQAdapter — IJobQueue implementation using python-bullmq over Redis.
-
-BullMQ is async; gRPC server runs sync (ThreadPoolExecutor).
-Bridge: each enqueue() creates a new event loop, runs the coroutine, closes the loop.
-Overhead is acceptable since enqueue is one-shot per request.
-"""
+"""BullMQAdapter — IJobQueue implementation using python-bullmq over Redis."""
 import asyncio
 import dataclasses
+from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, TypeVar
 
 from document_chunk.domain.ports.job_queue import (
     DOCUMENT_ENRICHMENT_QUEUE_NAME,
@@ -20,6 +18,19 @@ from document_chunk.shared.result import Err, Ok, Result
 
 logger = get_logger(__name__)
 
+_T = TypeVar("_T")
+
+
+def _run_coroutine(coroutine: Coroutine[Any, Any, _T]) -> _T:
+    """Run an async BullMQ call from both sync and async-hosted callers."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="bullmq-enqueue") as executor:
+        return executor.submit(asyncio.run, coroutine).result()
+
 
 class BullMQAdapter(IJobQueue):
     def __init__(self, config: RedisConfig) -> None:
@@ -27,17 +38,13 @@ class BullMQAdapter(IJobQueue):
 
     def enqueue(self, payload: DocumentJobPayload) -> Result[str, Exception]:
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                job_id = loop.run_until_complete(
-                    self._async_enqueue(
-                        queue_name=DOCUMENT_PROCESSING_QUEUE_NAME,
-                        job_name=payload.document_id,
-                        payload=payload,
-                    )
+            job_id = _run_coroutine(
+                self._async_enqueue(
+                    queue_name=DOCUMENT_PROCESSING_QUEUE_NAME,
+                    job_name=payload.document_id,
+                    payload=payload,
                 )
-            finally:
-                loop.close()
+            )
             logger.info("queue.enqueued", document_id=payload.document_id, job_id=job_id)
             return Ok(job_id)
         except Exception as e:
@@ -46,17 +53,13 @@ class BullMQAdapter(IJobQueue):
 
     def enqueue_enrichment(self, payload: EnrichmentJobPayload) -> Result[str, Exception]:
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                job_id = loop.run_until_complete(
-                    self._async_enqueue(
-                        queue_name=DOCUMENT_ENRICHMENT_QUEUE_NAME,
-                        job_name=payload.document_id,
-                        payload=payload,
-                    )
+            job_id = _run_coroutine(
+                self._async_enqueue(
+                    queue_name=DOCUMENT_ENRICHMENT_QUEUE_NAME,
+                    job_name=payload.document_id,
+                    payload=payload,
                 )
-            finally:
-                loop.close()
+            )
             logger.info(
                 "queue.enrichment_enqueued",
                 document_id=payload.document_id,

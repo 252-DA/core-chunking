@@ -2,12 +2,12 @@
 
 import json
 import re
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
 from document_chunk.domain.exceptions import ProcessingError
-from document_chunk.domain.ports.llm_client import ILLMClient
+from document_chunk.domain.ports.llm_client import ILLMClient, LLMUsage
 from document_chunk.shared.result import Err, Ok, Result
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -42,9 +42,15 @@ def generate_structured_payload(
     system: str | None,
     schema_model: type[SchemaT],
     repair_schema_name: str | None = None,
+    on_usage: Callable[[LLMUsage], None] | None = None,
 ) -> Result[SchemaT, Exception]:
-    """Generate a typed payload, retrying once with the model's JSON Schema."""
-    first_result = llm_client.generate(prompt, system=system)
+    """
+    Generate a typed payload, retrying once with the model's JSON Schema.
+
+    ``on_usage`` nhận token của **mỗi** lần gọi, kể cả lần sửa JSON — lần sửa
+    cũng tốn tiền nên không được bỏ ra ngoài sổ chi phí.
+    """
+    first_result = _generate(llm_client, prompt, system, on_usage)
     if isinstance(first_result, Err):
         return Err(first_result.error)
 
@@ -58,7 +64,7 @@ def generate_structured_payload(
         schema_model=schema_model,
         schema_name=repair_schema_name,
     )
-    repair_result = llm_client.generate(repair_prompt, system=_REPAIR_SYSTEM_PROMPT)
+    repair_result = _generate(llm_client, repair_prompt, _REPAIR_SYSTEM_PROMPT, on_usage)
     if isinstance(repair_result, Err):
         return Err(repair_result.error)
 
@@ -75,6 +81,22 @@ def generate_structured_payload(
             cause=repaired_result.error,
         )
     )
+
+
+def _generate(
+    llm_client: ILLMClient,
+    prompt: str,
+    system: str | None,
+    on_usage: Callable[[LLMUsage], None] | None,
+) -> Result[str, Exception]:
+    """Gọi model và báo usage nếu adapter có; adapter cũ vẫn chạy bình thường."""
+    result = llm_client.generate_with_usage(prompt, system=system)
+    if isinstance(result, Err):
+        return Err(result.error)
+    text, usage = result.unwrap()
+    if on_usage is not None:
+        on_usage(usage)
+    return Ok(text)
 
 
 def _build_repair_prompt(

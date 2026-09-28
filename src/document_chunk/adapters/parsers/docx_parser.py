@@ -154,9 +154,12 @@ class DocxParser(IParser):
                 heading_level=heading_level,
             )
 
+        style = para.style.name if para.style else ""
+        numbered = para._element.pPr is not None and para._element.pPr.find(qn("w:numPr")) is not None
         return Section(
             content=text,
-            element_type=ElementType.PARAGRAPH,
+            element_type=ElementType.LIST if numbered or style.lower().startswith("list") else ElementType.PARAGRAPH,
+            metadata={"style": style},
         )
 
     def _detect_heading_level(self, para: Paragraph) -> int:
@@ -203,7 +206,12 @@ class DocxParser(IParser):
         """Convert table thành plain text dạng markdown-ish."""
         rows: list[list[str]] = []
         for row in table.rows:
-            cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+            cells = []
+            previous = None
+            for cell in row.cells:
+                if cell._tc is not previous:
+                    cells.append(cell.text.strip().replace("\n", " "))
+                previous = cell._tc
             rows.append(cells)
 
         if not rows:

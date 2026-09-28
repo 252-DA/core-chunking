@@ -13,6 +13,7 @@ _WORKER_DIR = str(Path(__file__).parent.parent.parent.parent / "worker")
 if _WORKER_DIR not in sys.path:
     sys.path.insert(0, _WORKER_DIR)
 
+from tests.support import as_llm_client
 from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
     StoredChapter,
@@ -53,7 +54,6 @@ _STORED_COURSE = StoredCourse(
     course_id="CO3115",
     code="CO3115",
     title_vi="Phân tích và Thiết kế Hệ thống",
-    extraction_confidence=0.9,
 )
 
 _STORED_LO = StoredLearningOutcome(
@@ -79,7 +79,7 @@ _STORED_CHUNK = StoredChunkMetadata(
 
 @pytest.fixture
 def mock_llm() -> MagicMock:
-    llm = MagicMock()
+    llm = as_llm_client(MagicMock())
     llm.model_id = "gemini-test"
     llm.generate.return_value = Ok(_FAKE_LLM_RESPONSE)
     return llm
@@ -96,6 +96,7 @@ def mock_store() -> MagicMock:
     ))
     store.list_chunks_for_lo.return_value = Ok([_STORED_CHUNK])
     store.persist_enrichment_batch.return_value = Ok(None)
+    store.persist_curriculum_quiz_items.return_value = Ok(None)
     store.list_los_by_chapter.return_value = Ok([_STORED_LO])
     store.list_los_by_assessment.return_value = Ok([_STORED_LO])
     return store
@@ -179,10 +180,12 @@ def test_persist_enrichment_called(use_case, mock_store):
         target_code="L.O.3.1",
         count=2,
     )
-    use_case.execute(req)
-    mock_store.persist_enrichment_batch.assert_called_once()
-    call_kwargs = mock_store.persist_enrichment_batch.call_args
-    quiz_items = call_kwargs[1].get("quiz_items") or call_kwargs[0][2]
+    # Đường sinh theo LO lưu qua persist_curriculum_quiz_items; trước đây test
+    # này khẳng định persist_enrichment_batch — một method use case không gọi.
+    result = use_case.execute(req)
+    assert result.is_ok(), str(result.error)
+    mock_store.persist_curriculum_quiz_items.assert_called_once()
+    quiz_items = mock_store.persist_curriculum_quiz_items.call_args.kwargs["quiz_items"]
     assert len(quiz_items) >= 2
 
 

@@ -147,6 +147,21 @@ class PipelineCore:
                 pages=parsed_doc.page_count,
             )
 
+            # Parser báo đủ/thiếu theo từng trang. Document vẫn đi tiếp, nhưng
+            # phần chưa đọc được phải thấy được ở log pipeline, không chỉ ở parser.
+            coverage = parsed_doc.metadata.get("coverage")
+            if coverage and coverage.get("status") != "complete":
+                logger.warning(
+                    "pipeline.parse_partial_coverage",
+                    document_id=document_id,
+                    pages_resolved=coverage.get("pages_resolved"),
+                    pages_examined=coverage.get("pages_examined"),
+                    unprocessed_pages=coverage.get("unprocessed_pages"),
+                    no_text_pages=coverage.get("no_text_pages"),
+                    degraded_pages=coverage.get("degraded_pages"),
+                    pages_skipped_by_limit=coverage.get("pages_skipped_by_limit"),
+                )
+
             # 4. Status → CHUNKING
             r = self._metadata_store.update_document_status(document_id, IngestionStatus.CHUNKING)
             if r.is_err():
@@ -199,6 +214,7 @@ class PipelineCore:
             )
 
             # 10. Persist chunk metadata and append the heading projection outbox event atomically.
+            metadata_payload_replace = getattr(self._chunker, "config", None) is not None and self._chunker.config.strategy == "structural"
             graph_chunks = self._build_graph_chunks(chunks)
             outbox_result = self._metadata_store.upsert_chunks_with_outbox(
                 chunks=self._build_chunk_metadata(chunks),
@@ -207,6 +223,7 @@ class PipelineCore:
                 payload={
                     "document_id": document_id,
                     "document_name": document.name,
+                    "replace_chunks": metadata_payload_replace,
                     "doc_type": doc_type.value,
                     "course_id": metadata.get("course_id"),
                     "owner_id": metadata.get("owner_id"),
@@ -224,6 +241,13 @@ class PipelineCore:
             )
             if outbox_result.is_err():
                 return self._fail(document_id, doc_type, outbox_result.error)
+
+            # Cleanup after metadata commits: a failed metadata write keeps old vectors.
+            # Retry uses the same structural IDs, so this can be repeated safely.
+            if metadata_payload_replace:
+                cleanup = self._vector_store.delete_stale(document_id, [c.id for c in chunks])
+                if cleanup.is_err():
+                    return self._fail(document_id, doc_type, cleanup.error)
 
             # 12. Status → INDEXED. Content generation is a separate explicit request.
             status_result = self._metadata_store.update_document_status(

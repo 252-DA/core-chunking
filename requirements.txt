@@ -12,3 +12,6 @@
 #
 # Install with LlamaIndex chunkers (for comparison):
 #   pip install -e ".[llamaindex]"
+
+# Structural chunking (tokenizer only; no embedding model loaded)
+tokenizers>=0.20.0

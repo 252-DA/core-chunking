@@ -131,9 +131,12 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT document_id,
-                               course_id,
-                               created_by,
+                        -- ::text: StoredDocumentContext khai báo str; để psycopg trả
+                        -- uuid.UUID thì các truy vấn sau so với cột varchar
+                        -- (courses.code) vỡ "character varying = uuid".
+                        SELECT document_id::text,
+                               course_id::text,
+                               created_by::text,
                                'vi' AS language
                         FROM documents
                         WHERE document_id = %s::uuid

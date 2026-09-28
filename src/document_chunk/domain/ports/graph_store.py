@@ -34,6 +34,14 @@ class GraphAssessment:
 
 
 @dataclass(frozen=True)
+class GraphChapterLOEdge:
+    """Cạnh chương → LO. Nhiều–nhiều: một LO được dạy qua nhiều chương."""
+    chapter_id: str
+    lo_id: str
+    provenance: str = "extracted"
+
+
+@dataclass(frozen=True)
 class GraphChunkLOEdge:
     chunk_id: str
     lo_id: str
@@ -115,6 +123,7 @@ class IGraphStore(ABC):
         los: "list[GraphLO]",
         assessments: "list[GraphAssessment]",
         lo_assessment_links: "list[tuple[str, str]]",
+        chapter_lo_links: "list[GraphChapterLOEdge] | None" = None,
     ) -> Result[None, Exception]:
         """Upsert Course/Chapter/LO/Assessment nodes + edges vào Neo4j."""
         ...

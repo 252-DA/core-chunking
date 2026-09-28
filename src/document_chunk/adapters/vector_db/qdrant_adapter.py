@@ -58,6 +58,7 @@ class QdrantAdapter(IVectorStore):
             host=self._config.host,
             port=self._config.port,
             api_key=self._config.api_key,
+            https=self._config.https,
             timeout=30,
         )
         logger.info(
@@ -123,7 +124,7 @@ class QdrantAdapter(IVectorStore):
             try:
                 t0 = time.perf_counter()
 
-                qdrant_filter = self._build_filter(filters) if filters else None
+                qdrant_filter = self._build_filter(filters or SearchFilter())
 
                 hits = self._client.query_points(
                     collection_name=self._config.collection_name,
@@ -193,6 +194,20 @@ class QdrantAdapter(IVectorStore):
             logger.error("qdrant.delete_by_document.failed", error=str(e))
             return Err(VectorStoreError("Qdrant delete_by_document failed", cause=e))
 
+    def delete_stale(self, document_id: str, keep_ids: list[str]) -> Result[None, Exception]:
+        """Replace a document snapshot only after its new vectors were upserted."""
+        try:
+            self._client.delete(
+                collection_name=self._config.collection_name,
+                points_selector=qmodels.FilterSelector(filter=qmodels.Filter(
+                    must=[qmodels.FieldCondition(key=_F_DOCUMENT_ID, match=qmodels.MatchValue(value=document_id))],
+                    must_not=[qmodels.HasIdCondition(has_id=keep_ids)] if keep_ids else [],
+                )), wait=True,
+            )
+            return Ok(None)
+        except Exception as exc:
+            return Err(VectorStoreError("Qdrant stale vector cleanup failed", cause=exc))
+
     def count(self) -> Result[int, Exception]:
         try:
             result = self._client.count(
@@ -232,6 +247,10 @@ class QdrantAdapter(IVectorStore):
         else:
             logger.info("qdrant.collection.exists", name=name)
 
+        for field in ("content_type", "chunker_version"):
+            client.create_payload_index(collection_name=name, field_name=field,
+                                        field_schema=qmodels.PayloadSchemaType.KEYWORD)
+
     # ------------------------------------------------------------------
     # Payload helpers
     # ------------------------------------------------------------------
@@ -239,6 +258,16 @@ class QdrantAdapter(IVectorStore):
     def _chunk_to_payload(self, chunk: Chunk) -> dict:
         """Chunk → Qdrant payload dict."""
         return {
+            "content_type": chunk.metadata.content_type,
+            "token_count": chunk.metadata.token_count,
+            "char_count": chunk.metadata.char_count,
+            "page_start": chunk.metadata.page_start,
+            "page_end": chunk.metadata.page_end,
+            "section_id": chunk.metadata.section_id,
+            "part_index": chunk.metadata.part_index,
+            "part_count": chunk.metadata.part_count,
+            "chunker_version": chunk.metadata.chunker_version,
+            "importance_score": chunk.metadata.importance_score,
             _F_CHUNK_ID:      chunk.id,
             _F_DOCUMENT_ID:   chunk.metadata.document_id,
             _F_DOCUMENT_NAME: chunk.metadata.document_name,
@@ -260,6 +289,16 @@ class QdrantAdapter(IVectorStore):
         """Qdrant payload → Chunk (reconstruct từ stored data)."""
         content = payload[_F_CONTENT]
         metadata = ChunkMetadata(
+            content_type=payload.get("content_type"),
+            token_count=payload.get("token_count"),
+            char_count=payload.get("char_count"),
+            page_start=payload.get("page_start"),
+            page_end=payload.get("page_end"),
+            section_id=payload.get("section_id"),
+            part_index=payload.get("part_index"),
+            part_count=payload.get("part_count"),
+            chunker_version=payload.get("chunker_version"),
+            importance_score=payload.get("importance_score"),
             document_id=payload[_F_DOCUMENT_ID],
             document_name=payload[_F_DOCUMENT_NAME],
             document_type=DocumentType(payload[_F_DOC_TYPE]),
@@ -320,7 +359,7 @@ class QdrantAdapter(IVectorStore):
                 match=qmodels.MatchValue(value=filters.owner_id),
             ))
 
-        if not conditions:
-            return None
-
-        return qmodels.Filter(must=conditions)
+        excluded = [qmodels.FieldCondition(
+            key="content_type", match=qmodels.MatchAny(any=list(filters.exclude_content_types)),
+        )] if filters.exclude_content_types else []
+        return qmodels.Filter(must=conditions, must_not=excluded) if conditions or excluded else None

@@ -5,6 +5,7 @@ Open docs at:
     http://localhost:8000/docs
 """
 from __future__ import annotations
+from document_chunk.adapters.chunkers.structural.inspect import inspection_metrics
 
 import json
 import tempfile
@@ -121,6 +122,13 @@ class ChunkInspect(BaseModel):
 
 
 class ChunkingStats(BaseModel):
+    token_p50: int | None = None
+    token_p95: int | None = None
+    token_max: int | None = None
+    chunks_over_max: int | None = None
+    chunks_under_min: int | None = None
+    toc_blocks_removed: int = 0
+    lcp_merges: int = 0
     total_chunks: int
     toc_chunks: int
     chunker_used: str
@@ -481,8 +489,8 @@ async def inspect_chunking(
         File(description="PDF, DOCX, PPTX, hoặc Markdown để inspect."),
     ],
     chunker: Annotated[
-        Literal["heading", "sentence", "token", "semantic"],
-        Form(description="Chunker strategy: heading | sentence | token | semantic."),
+        Literal["heading", "structural", "sentence", "token", "semantic"],
+        Form(description="Chunker strategy: heading | structural | sentence | token | semantic."),
     ] = "heading",
     chunk_size: Annotated[
         int,
@@ -552,7 +560,15 @@ async def inspect_chunking(
             tmp_path.unlink()
 
     # Build chunker
-    if chunker == "heading":
+    if chunker == "structural":
+        from document_chunk.adapters.chunkers.structural import StructuralChunker
+        try:
+            _chunker = StructuralChunker(get_settings().chunker.model_copy(update={"strategy": "structural"}))
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        chunk_size_out = _chunker.config.max_tokens
+        chunk_overlap_out = _chunker.config.overlap_tokens
+    elif chunker == "heading":
         _chunker = HeadingChunker(ChunkerConfig())
         chunk_size_out: int | None = None
         chunk_overlap_out: int | None = None
@@ -602,6 +618,7 @@ async def inspect_chunking(
             max_chars=max(char_counts),
             parse_duration_ms=parse_ms,
             chunk_duration_ms=chunk_ms,
+            **inspection_metrics(chunks, _chunker, get_settings().chunker),
         ),
         chunks=[
             ChunkInspect(

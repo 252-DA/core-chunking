@@ -18,6 +18,11 @@ from document_chunk.domain.ports.metadata_store import (
     StoredLearningOutcome,
     StoredLessonCard,
     StoredQuizItem,
+    StoredChapterLOLink,
+    StoredCourseGoal,
+    StoredCourseSession,
+    StoredExtractionIssue,
+    StoredLOAssessmentLink,
 )
 from document_chunk.shared.result import Ok, Result
 
@@ -135,9 +140,18 @@ class NoopMetadataStore(IMetadataStore):
         chapters: list[StoredChapter],
         learning_outcomes: list[StoredLearningOutcome],
         assessments: list[StoredAssessment],
-        lo_assessment_links: list[tuple[str, str]],
+        lo_assessment_links: list[StoredLOAssessmentLink],
+        chapter_lo_links: list[StoredChapterLOLink] | None = None,
+        goals: list[StoredCourseGoal] | None = None,
+        sessions: list[StoredCourseSession] | None = None,
+        issues: list[StoredExtractionIssue] | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
+
+    def list_chapter_lo_links(
+        self, course_id: str
+    ) -> Result[list[StoredChapterLOLink], Exception]:
+        return Ok([])
 
     def get_curriculum(
         self, course_id: str
@@ -168,12 +182,38 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[list[StoredChunkMetadata], Exception]:
         return Ok([])
 
+    def get_document_placement(self, document_id: str):
+        return Ok(None)
+
+    def set_document_chapter(self, document_id, chapter_code, provenance, confidence, reason):
+        return Ok(False)
+
+    def delete_inferred_chunk_lo_mappings(self, document_id: str):
+        return Ok(0)
+
     def update_content_generation_request(
         self,
         request_id: str,
         status: str,
         generated_count: int | None = None,
         last_error: str | None = None,
+    ) -> Result[None, Exception]:
+        return Ok(None)
+
+    def record_llm_usage(
+        self,
+        *,
+        provider: str,
+        model: str,
+        use_case: str,
+        status: str,
+        course_id: str | None = None,
+        user_id: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float = 0,
+        latency_ms: int | None = None,
+        trace_id: str | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
 
