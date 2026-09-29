@@ -58,7 +58,6 @@ def serve() -> None:
         get_quiz_use_case=container.get_quiz_use_case,
         ingest_curriculum_use_case=container.ingest_curriculum_use_case,
         search_by_lo_use_case=container.search_by_lo_use_case,
-        generate_curriculum_quiz_use_case=container.generate_curriculum_quiz_use_case,
         metadata_store=container.metadata_store,
     )
 

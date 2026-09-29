@@ -16,7 +16,6 @@ from document_chunk.domain.ports.chunker import IChunker
 from document_chunk.domain.ports.embedder import IEmbedder
 from document_chunk.domain.ports.file_storage import IFileStorage
 from document_chunk.domain.ports.graph_store import IGraphStore
-from document_chunk.domain.ports.llm_client import ILLMClient
 from document_chunk.domain.ports.metadata_store import IMetadataStore
 from document_chunk.domain.ports.parser import IParser
 from document_chunk.domain.ports.vector_store import IVectorStore
@@ -141,22 +140,6 @@ class Container:
         from document_chunk.adapters.vector_db.qdrant_adapter import QdrantAdapter
         logger.debug("container.init", component="QdrantAdapter")
         return QdrantAdapter(self._settings.qdrant)
-
-    # ------------------------------------------------------------------
-    # LLM Client
-    # ------------------------------------------------------------------
-
-    @cached_property
-    def llm_client(self) -> ILLMClient:
-        provider = self._settings.llm.provider
-        logger.debug("container.init", component="LLMClient", provider=provider)
-
-        if provider == "gemini":
-            from document_chunk.adapters.llm.gemini_llm_client import GeminiLLMClient
-
-            return GeminiLLMClient(self._settings.llm)
-
-        raise ValueError(f"Unknown LLM provider: {provider}")
 
     # ------------------------------------------------------------------
     # Metadata Store (PostgreSQL)
@@ -335,19 +318,6 @@ class Container:
         return RetrieveQuizContextUseCase(
             metadata_store=self.metadata_store,
             semantic_search=self.search_chunks_use_case,
-        )
-
-    @cached_property
-    def generate_curriculum_quiz_use_case(self):
-        try:
-            from worker.worker.use_cases.generate_curriculum_quiz import GenerateCurriculumQuizUseCase
-        except ModuleNotFoundError:
-            logger.warning("container.init", component="GenerateCurriculumQuizUseCase", reason="worker.unavailable")
-            return None
-        logger.debug("container.init", component="GenerateCurriculumQuizUseCase")
-        return GenerateCurriculumQuizUseCase(
-            metadata_store=self.metadata_store,
-            llm_client=self.llm_client,
         )
 
 
