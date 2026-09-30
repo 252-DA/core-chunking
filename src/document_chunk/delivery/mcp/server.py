@@ -66,14 +66,20 @@ def create_mcp_server(
         query: str,
         top_k: int = 10,
         score_threshold: float = 0.0,
+        document_ids: list[str] | None = None,
     ) -> dict:
-        """Semantic-search course chunks and return content with source metadata."""
+        """Semantic-search course chunks and return content with source metadata.
+
+        document_ids narrows the search to those documents — what a reader open on
+        one document needs for a follow-up question. Empty means the whole course.
+        """
         result = search_chunks_use_case.execute(
             SearchRequest(
                 course_id=course_id,
                 query=query,
                 top_k=top_k,
                 score_threshold=score_threshold,
+                document_ids=list(document_ids or []),
             )
         )
         if result.is_err():
