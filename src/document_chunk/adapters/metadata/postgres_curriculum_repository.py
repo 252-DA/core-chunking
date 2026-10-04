@@ -20,6 +20,7 @@ from document_chunk.domain.ports.metadata_store import (
     StoredCourseSession,
     StoredExtractionIssue,
     StoredLearningOutcome,
+    StoredLessonCard,
     StoredLOAssessmentLink,
     StoredQuizItem,
 )
@@ -128,6 +129,130 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
             return Err(
                 MetadataStoreError(
                     "PostgreSQL curriculum quiz persistence failed",
+                    cause=exc,
+                )
+            )
+
+    def persist_curriculum_lesson_cards(
+        self,
+        lo_id: str,
+        lesson_cards: list[StoredLessonCard],
+    ) -> Result[None, Exception]:
+        if not lesson_cards:
+            return Ok(None)
+
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    # INSERT ... SELECT FROM lesson_row bên dưới ra 0 dòng khi LO
+                    # không còn hiện hành, và đường enrichment từng mất card im
+                    # lặng đúng theo kiểu đó. Kiểm tra trước để lỗi có tên.
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM learning_outcomes
+                        WHERE lo_id = %s::uuid
+                          AND deleted_at IS NULL
+                          AND is_current = TRUE
+                        """,
+                        (lo_id,),
+                    )
+                    if cur.fetchone() is None:
+                        return Err(
+                            MetadataStoreError(
+                                f"Learning outcome {lo_id} is missing or not current; "
+                                "lesson cards were not saved"
+                            )
+                        )
+                    cur.executemany(
+                        """
+                        WITH target_context AS (
+                            SELECT lo.course_id, lo.statement_vi
+                            FROM learning_outcomes lo
+                            WHERE lo.lo_id = %s::uuid
+                              AND lo.deleted_at IS NULL
+                              AND lo.is_current = TRUE
+                        ),
+                        lesson_row AS (
+                            INSERT INTO lessons (course_id, lo_id, title, status)
+                            SELECT course_id, %s::uuid,
+                                   COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
+                            FROM target_context
+                            ON CONFLICT (course_id, lo_id)
+                            DO UPDATE SET updated_at = NOW()
+                            RETURNING lesson_id, course_id
+                        )
+                        INSERT INTO lesson_cards (
+                            card_id,
+                            lesson_id,
+                            course_id,
+                            lo_id,
+                            title,
+                            content,
+                            source_chunk_ids,
+                            position,
+                            status,
+                            deleted_at
+                        )
+                        SELECT %s::uuid, lesson_row.lesson_id, lesson_row.course_id,
+                               %s::uuid, %s, %s::jsonb, %s::uuid[],
+                               -- Moi dong la mot cau lenh rieng trong cung
+                               -- transaction, nen dong sau thay dong truoc va
+                               -- ca me noi tiep theo thu tu card_index.
+                               COALESCE((
+                                   SELECT MAX(lc.position) + 1
+                                   FROM lesson_cards lc
+                                   WHERE lc.lesson_id = lesson_row.lesson_id
+                                     AND lc.deleted_at IS NULL
+                               ), 0),
+                               'GENERATED_DRAFT', NULL
+                        FROM lesson_row
+                        ON CONFLICT (card_id) DO UPDATE SET
+                            title = EXCLUDED.title,
+                            content = EXCLUDED.content,
+                            source_chunk_ids = EXCLUDED.source_chunk_ids,
+                            updated_at = NOW(),
+                            deleted_at = NULL
+                        -- card_id tat dinh theo (LO, tieu de): worker retry roi
+                        -- vao nhanh nay va giu nguyen vi tri. Card da duyet hoac
+                        -- da xuat ban khong bi ghi de.
+                        WHERE lesson_cards.status = 'GENERATED_DRAFT';
+                        """,
+                        [
+                            (
+                                lo_id,
+                                lo_id,
+                                stable_uuid(card.card_id),
+                                lo_id,
+                                card.title,
+                                json.dumps(
+                                    {
+                                        "key_insight": card.key_insight,
+                                        "bullets": list(card.bullets),
+                                        "example": card.example,
+                                        "misconception": card.misconception,
+                                        "check_question": card.check_question,
+                                        "check_answer": card.check_answer,
+                                        "model_id": card.model_id,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                [
+                                    stable_uuid(chunk_id)
+                                    for chunk_id in (
+                                        card.source_chunk_ids or (card.primary_chunk_id,)
+                                    )
+                                ],
+                            )
+                            for card in sorted(lesson_cards, key=lambda c: c.card_index)
+                        ],
+                    )
+                conn.commit()
+            return Ok(None)
+        except Exception as exc:
+            return Err(
+                MetadataStoreError(
+                    "PostgreSQL curriculum lesson-card persistence failed",
                     cause=exc,
                 )
             )

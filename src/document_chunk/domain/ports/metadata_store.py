@@ -90,6 +90,12 @@ class StoredLessonCard:
     title: str = ""
     bullets: tuple[str, ...] = ()
     key_insight: str | None = None
+    # Card sinh theo LO có thêm ví dụ, lỗi hiểu nhầm và một cặp câu tự kiểm
+    # tra (mặt lật của flashcard). Card từ enrichment để trống các trường này.
+    example: str | None = None
+    misconception: str | None = None
+    check_question: str | None = None
+    check_answer: str | None = None
     card_index: int = 0
     model_id: str | None = None
 
@@ -373,6 +379,20 @@ class IMetadataStore(ABC):
         quiz_items: list[StoredQuizItem],
     ) -> Result[None, Exception]:
         """Append generated quiz drafts for one LO in a single transaction."""
+        ...
+
+    @abstractmethod
+    def persist_curriculum_lesson_cards(
+        self,
+        lo_id: str,
+        lesson_cards: list[StoredLessonCard],
+    ) -> Result[None, Exception]:
+        """
+        Append generated lesson-card drafts for one LO in a single transaction.
+
+        New cards go after the lesson's existing cards, in ``card_index`` order.
+        Re-persisting a card id only overwrites it while it is still a draft.
+        """
         ...
 
     @abstractmethod

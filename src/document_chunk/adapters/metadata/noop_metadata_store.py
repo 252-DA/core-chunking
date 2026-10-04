@@ -101,6 +101,13 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[None, Exception]:
         return Ok(None)
 
+    def persist_curriculum_lesson_cards(
+        self,
+        lo_id: str,
+        lesson_cards: list[StoredLessonCard],
+    ) -> Result[None, Exception]:
+        return Ok(None)
+
     def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
         return Ok([])
 

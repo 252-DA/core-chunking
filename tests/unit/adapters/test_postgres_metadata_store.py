@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from inspect import getsource
 
@@ -314,6 +315,76 @@ class TestPostgresMetadataStore:
         assert "INSERT INTO quiz_items" in query
         assert "UPDATE quiz_items SET deleted_at" not in query
         assert rows[0][8] == 4
+
+    def test_persist_curriculum_lesson_cards_appends_in_card_order(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        cursor = _FakeCursor()
+        cursor.fetchone_result = (1,)  # LO hiện hành
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        def card(card_id: str, index: int) -> StoredLessonCard:
+            return StoredLessonCard(
+                card_id=card_id,
+                document_id="doc-001",
+                primary_chunk_id="chunk-001",
+                source_chunk_ids=("chunk-001",),
+                title=f"Card {index}",
+                bullets=("Ý một", "Ý hai"),
+                key_insight="Ý chính.",
+                example="Ví dụ.",
+                check_question="Hỏi?",
+                check_answer="Đáp.",
+                card_index=index,
+                model_id="gemini-test",
+            )
+
+        result = store.persist_curriculum_lesson_cards(
+            lo_id="11111111-1111-4111-8111-111111111111",
+            lesson_cards=[card("card-b", 1), card("card-a", 0)],
+        )
+
+        assert result.is_ok()
+        assert connection.commit_calls == 1
+        query, rows = cursor.executemany_calls[0]
+        assert "INSERT INTO lesson_cards" in query
+        assert "MAX(lc.position) + 1" in query
+        assert "WHERE lesson_cards.status = 'GENERATED_DRAFT'" in query
+        assert [row[4] for row in rows] == ["Card 0", "Card 1"]
+        content = json.loads(rows[0][5])
+        assert content["check_question"] == "Hỏi?"
+        assert content["check_answer"] == "Đáp."
+        assert content["example"] == "Ví dụ."
+        assert content["misconception"] is None
+
+    def test_persist_curriculum_lesson_cards_refuses_unknown_lo(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        cursor = _FakeCursor()
+        cursor.fetchone_result = None  # LO không tồn tại / không còn hiện hành
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+
+        result = store.persist_curriculum_lesson_cards(
+            lo_id="11111111-1111-4111-8111-111111111111",
+            lesson_cards=[
+                StoredLessonCard(card_id="card-a", document_id="doc", primary_chunk_id="chunk")
+            ],
+        )
+
+        assert result.is_err()
+        assert "not current" in str(result.error)
+        assert cursor.executemany_calls == []
+        assert connection.commit_calls == 0
 
 
 def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
