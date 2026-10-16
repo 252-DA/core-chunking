@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from document_chunk.domain.entities.document import Document, DocumentType
 from document_chunk.domain.outbox_events import OutboxEventType
@@ -114,6 +115,29 @@ class StoredQuizItem:
     difficulty: str = "medium"
     question_index: int = 0
     model_id: str | None = None
+    # Kiểu câu và đáp án dạng JSON ghi vào quiz_items.correct_answer (xem
+    # core-api quiz/question-types.ts). ``correct_answer`` None nghĩa là trắc
+    # nghiệm một đáp án: lấy ``choices[correct_index]`` như trước.
+    question_type: str = "MCQ_SINGLE"
+    correct_answer: Any = None
+
+
+@dataclass(frozen=True)
+class StoredAnswerForGrading:
+    """
+    Một câu trả lời tự luận chờ chấm, kèm đề và đáp án mẫu lúc người học nộp
+    (``quiz_attempts.grading_input``). Ba trường đề là None khi bài nộp không
+    lưu đề: không chấm bằng AI được.
+    """
+
+    attempt_id: str
+    quiz_id: str
+    course_id: str
+    question_type: str | None
+    question: str | None
+    correct_answer: Any
+    chosen_answer: Any
+    grading_status: str
 
 
 @dataclass(frozen=True)
@@ -580,6 +604,58 @@ class IMetadataStore(ABC):
         Append one row to llm_usage_logs for cost/latency observability.
         Best-effort: callers should treat a failure here as non-fatal to the
         use case that triggered the LLM call.
+        """
+        ...
+
+    # ------------------------------------------------------------------
+    # Answer grading (tự luận ngắn, worker chấm bằng LLM)
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def list_answers_for_grading(
+        self,
+        attempt_ids: builtins.list[str],
+    ) -> Result[builtins.list[StoredAnswerForGrading], Exception]:
+        """Đọc các câu trả lời theo attempt_id, kèm đề và đáp án mẫu lúc nộp."""
+        ...
+
+    @abstractmethod
+    def save_answer_grade(
+        self,
+        *,
+        attempt_id: str,
+        score: float,
+        is_correct: bool,
+        feedback: str | None,
+    ) -> Result[bool, Exception]:
+        """
+        Ghi điểm (GRADED) cho một câu còn ở grading_status PENDING. Trả False
+        nếu câu đã được chấm (worker retry), để không chấm đè.
+        """
+        ...
+
+    @abstractmethod
+    def mark_answer_needs_review(
+        self,
+        *,
+        attempt_id: str,
+        feedback: str,
+    ) -> Result[bool, Exception]:
+        """
+        AI không chấm được câu PENDING: chuyển NEEDS_REVIEW để giảng viên chấm
+        tay, không ghi điểm. Trả False nếu câu không còn PENDING.
+        """
+        ...
+
+    @abstractmethod
+    def release_graded_attempts(
+        self,
+        attempt_ids: builtins.list[str],
+    ) -> Result[int, Exception]:
+        """
+        Chuyển cả lượt nộp từ ags_status AWAITING_GRADE sang PENDING khi mọi
+        câu đã GRADED (còn PENDING hay NEEDS_REVIEW thì giữ nguyên). Trả số
+        dòng đã chuyển.
         """
         ...
 

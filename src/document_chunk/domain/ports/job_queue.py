@@ -9,6 +9,7 @@ DOCUMENT_PROCESSING_QUEUE_NAME = "document_processing"
 DOCUMENT_ENRICHMENT_QUEUE_NAME = "document_enrichment"
 CONTENT_GENERATION_QUEUE_NAME = "content_generation"
 OUTBOX_RELAY_QUEUE_NAME = "outbox_relay"
+ANSWER_GRADING_QUEUE_NAME = "answer_grading"
 
 
 @dataclass

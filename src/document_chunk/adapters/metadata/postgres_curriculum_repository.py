@@ -27,6 +27,15 @@ from document_chunk.domain.ports.metadata_store import (
 from document_chunk.shared.result import Err, Ok, Result
 
 
+def _correct_answer(item: StoredQuizItem) -> object:
+    """Đáp án ghi vào quiz_items.correct_answer, theo dạng của từng kiểu câu."""
+    if item.correct_answer is not None:
+        return item.correct_answer
+    if 0 <= item.correct_index < len(item.choices):
+        return item.choices[item.correct_index]
+    return None
+
+
 class PostgresCurriculumRepository(PostgresRepositoryBase):
     """Curriculum, learning-outcome, assessment, and LMS operations."""
 
@@ -76,13 +85,14 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                             deleted_at
                         )
                         SELECT %s::uuid, lesson_id, course_id, %s::uuid,
-                               'MCQ_SINGLE', %s, %s::jsonb, %s::jsonb, %s,
+                               %s, %s, %s::jsonb, %s::jsonb, %s,
                                %s, %s::uuid[], 'GENERATED_DRAFT', NULL
                         FROM lesson_row
                         ON CONFLICT (quiz_id) DO UPDATE SET
                             lesson_id = EXCLUDED.lesson_id,
                             course_id = EXCLUDED.course_id,
                             lo_id = EXCLUDED.lo_id,
+                            type = EXCLUDED.type,
                             question = EXCLUDED.question,
                             options = EXCLUDED.options,
                             correct_answer = EXCLUDED.correct_answer,
@@ -104,13 +114,11 @@ class PostgresCurriculumRepository(PostgresRepositoryBase):
                                 lo_id,
                                 stable_uuid(item.question_id),
                                 lo_id,
+                                item.question_type,
                                 item.question,
-                                json.dumps(list(item.choices)),
-                                json.dumps(
-                                    item.choices[item.correct_index]
-                                    if 0 <= item.correct_index < len(item.choices)
-                                    else None
-                                ),
+                                # Điền khuyết và tự luận không có phương án.
+                                json.dumps(list(item.choices)) if item.choices else None,
+                                json.dumps(_correct_answer(item), ensure_ascii=False),
                                 item.explanation,
                                 self._bloom_level(bloom_level),
                                 [

@@ -7,6 +7,7 @@ from document_chunk.domain.ports.metadata_store import (
     DocumentSummary,
     IMetadataStore,
     IngestionStatus,
+    StoredAnswerForGrading,
     StoredAssessment,
     StoredChapter,
     StoredChunkConcept,
@@ -223,6 +224,33 @@ class NoopMetadataStore(IMetadataStore):
         trace_id: str | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
+
+    def list_answers_for_grading(
+        self,
+        attempt_ids: list[str],
+    ) -> Result[list[StoredAnswerForGrading], Exception]:
+        return Ok([])
+
+    def save_answer_grade(
+        self,
+        *,
+        attempt_id: str,
+        score: float,
+        is_correct: bool,
+        feedback: str | None,
+    ) -> Result[bool, Exception]:
+        return Ok(False)
+
+    def mark_answer_needs_review(
+        self,
+        *,
+        attempt_id: str,
+        feedback: str,
+    ) -> Result[bool, Exception]:
+        return Ok(False)
+
+    def release_graded_attempts(self, attempt_ids: list[str]) -> Result[int, Exception]:
+        return Ok(0)
 
     # ------------------------------------------------------------------
     # LMS / web admin methods

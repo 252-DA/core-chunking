@@ -314,7 +314,40 @@ class TestPostgresMetadataStore:
         query, rows = cursor.executemany_calls[0]
         assert "INSERT INTO quiz_items" in query
         assert "UPDATE quiz_items SET deleted_at" not in query
-        assert rows[0][8] == 4
+        # (lo, lo, quiz_id, lo, type, question, options, correct, explanation, bloom, …)
+        assert rows[0][4] == "MCQ_SINGLE"
+        assert rows[0][9] == 4
+
+    def test_persist_curriculum_quiz_items_writes_type_and_typed_answer(self, monkeypatch):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        cursor = _FakeCursor()
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+        result = store.persist_curriculum_quiz_items(
+            lo_id="00000000-0000-0000-0000-000000000001",
+            bloom_level=3,
+            quiz_items=[
+                StoredQuizItem(
+                    question_id="00000000-0000-0000-0000-000000000002",
+                    document_id="doc",
+                    primary_chunk_id="00000000-0000-0000-0000-000000000003",
+                    question="Cây n đỉnh có ____ cạnh.",
+                    question_type="FILL_BLANK",
+                    correct_answer=["n-1", "n − 1"],
+                )
+            ],
+        )
+
+        assert result.is_ok()
+        _, rows = cursor.executemany_calls[0]
+        assert rows[0][4] == "FILL_BLANK"
+        assert rows[0][6] is None
+        assert json.loads(rows[0][7]) == ["n-1", "n − 1"]
 
     def test_persist_curriculum_lesson_cards_appends_in_card_order(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
@@ -405,3 +438,86 @@ def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
     assert cleanup[0][1] == ('doc', ['new'])
     assert 'deleted_at = NULL' in cursor.executemany_calls[0][0]
     assert connection.commit_calls == 1
+
+
+class TestAnswerGrading:
+    """Chấm tự luận: chỉ chấm câu còn PENDING, mở AGS khi mọi câu của lượt đã GRADED."""
+
+    def _store(self, monkeypatch, cursor):
+        store = PostgresMetadataStore(SqlConfig(enabled=True))
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        monkeypatch.setattr(store, "_connection", fake_connection)
+        return store, connection
+
+    def test_save_grade_only_touches_pending_rows(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.rowcount = 0  # worker retry: câu đã được chấm ở lượt trước
+        store, connection = self._store(monkeypatch, cursor)
+
+        result = store.save_answer_grade(
+            attempt_id="00000000-0000-0000-0000-000000000001",
+            score=50,
+            is_correct=False,
+            feedback="Thiếu ý 2.",
+        )
+
+        assert result.unwrap() is False
+        query, params = cursor.execute_calls[0]
+        assert "grading_status = 'GRADED'" in query
+        assert "grading_status = 'PENDING'" in query
+        assert params[:3] == (50, False, "Thiếu ý 2.")
+        assert connection.commit_calls == 1
+
+    def test_needs_review_keeps_the_score_untouched(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.rowcount = 1
+        store, connection = self._store(monkeypatch, cursor)
+
+        result = store.mark_answer_needs_review(
+            attempt_id="00000000-0000-0000-0000-000000000001",
+            feedback="Giảng viên sẽ chấm câu này.",
+        )
+
+        assert result.unwrap() is True
+        query, params = cursor.execute_calls[0]
+        assert "grading_status = 'NEEDS_REVIEW'" in query
+        assert "score" not in query
+        assert "grading_status = 'PENDING'" in query
+        assert params[0] == "Giảng viên sẽ chấm câu này."
+        assert connection.commit_calls == 1
+
+    def test_release_waits_for_every_essay_of_the_submission(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.rowcount = 3
+        store, _ = self._store(monkeypatch, cursor)
+        ids = ["00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"]
+
+        assert store.release_graded_attempts(ids).unwrap() == 3
+        lock, _ = cursor.execute_calls[0]
+        assert "FOR UPDATE" in lock and "ORDER BY attempt_id" in lock
+        query, params = cursor.execute_calls[1]
+        assert "ags_status = 'AWAITING_GRADE'" in query
+        # NEEDS_REVIEW cũng giữ cả lượt: lỗi chấm không được thành điểm trên LMS.
+        assert "NOT EXISTS" in query and "grading_status <> 'GRADED'" in query
+        assert params == (ids, ids)
+
+    def test_list_answers_maps_rows(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.fetchall_result = [
+            ("a1", "q1", "c1", "SHORT_ANSWER", "Vì sao?", {"model_answer": "M", "rubric": ["R"]}, "Bài làm", "PENDING")
+        ]
+        store, _ = self._store(monkeypatch, cursor)
+
+        [answer] = store.list_answers_for_grading(["00000000-0000-0000-0000-000000000001"]).unwrap()
+
+        query, _ = cursor.execute_calls[0]
+        assert "grading_input" in query and "quiz_items" not in query
+        assert answer.question_type == "SHORT_ANSWER"
+        assert answer.correct_answer == {"model_answer": "M", "rubric": ["R"]}
+        assert answer.chosen_answer == "Bài làm"
+        assert answer.grading_status == "PENDING"
