@@ -58,6 +58,8 @@ class GenerateCurriculumQuizRequest:
     bloom_level: str | None = None
     count: int = 5
     source_document_ids: list[str] | None = None
+    # Một kiểu câu cho cả mẻ; xem core-api quiz/question-types.ts.
+    question_type: str = "MCQ_SINGLE"
 
 
 @dataclass

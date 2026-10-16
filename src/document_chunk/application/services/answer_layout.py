@@ -65,4 +65,16 @@ def balanced_positions(count: int, *, options: int = 4, seed: str = "") -> list[
     return [cycle[(start + i) % options] for i in range(count)]
 
 
-__all__ = ["balanced_positions", "shuffle_choices"]
+def shuffle_order(choices: list[str], *, seed: str) -> list[str]:
+    """
+    Xáo toàn bộ phương án, tất định theo ``seed``.
+
+    Dùng cho câu nhiều đáp án đúng: không có một vị trí "đúng" để cân bằng như
+    ``shuffle_choices``, chỉ cần các đáp án đúng không dồn về đầu danh sách.
+    """
+    out = list(choices)
+    _rng(seed).shuffle(out)
+    return out
+
+
+__all__ = ["balanced_positions", "shuffle_choices", "shuffle_order"]
