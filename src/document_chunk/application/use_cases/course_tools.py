@@ -60,10 +60,16 @@ class CourseToolsUseCase:
         self._knowledge = knowledge_store
         self._metadata = metadata_store
 
-    def get_document_page(self, document_id: str, page: int) -> Result[dict, Exception]:
+    def get_document_page(
+        self, document_id: str, page: int, course_id: str | None = None
+    ) -> Result[dict, Exception]:
         if page < 1:
             return Err(ProcessingError("page must be at least 1"))
-        result = self._knowledge.list_page_chunks(document_id, page)
+        result = (
+            self._knowledge.list_page_chunks(document_id, page, course_id)
+            if course_id is not None
+            else self._knowledge.list_page_chunks(document_id, page)
+        )
         if result.is_err():
             return Err(result.error)
         chunks = result.unwrap()

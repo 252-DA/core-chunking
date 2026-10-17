@@ -78,11 +78,12 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def list_page_chunks(
-        self, document_id: str, page_number: int
+        self, document_id: str, page_number: int, course_id: str | None = None
     ) -> Result[list[KnowledgeChunk], Exception]:
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
+                    course_uuid = self._resolve_course(cur, course_id) if course_id else None
                     cur.execute(
                         f"""
                         SELECT {_CHUNK_COLUMNS}
@@ -90,11 +91,12 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                         JOIN documents d ON d.document_id = c.document_id
                         WHERE c.document_id = %s::uuid
                           AND c.page_number = %s
+                          AND (%s::uuid IS NULL OR d.course_id = %s::uuid)
                           AND c.deleted_at IS NULL
                           AND d.deleted_at IS NULL
                         ORDER BY c.sort_order;
                         """,
-                        (stable_uuid(document_id), page_number),
+                        (stable_uuid(document_id), page_number, course_uuid, course_uuid),
                     )
                     return Ok([_chunk(r) for r in cur.fetchall()])
         except Exception as exc:

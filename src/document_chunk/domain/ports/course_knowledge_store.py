@@ -69,7 +69,7 @@ class ICourseKnowledgeStore(ABC):
 
     @abstractmethod
     def list_page_chunks(
-        self, document_id: str, page_number: int
+        self, document_id: str, page_number: int, course_id: str | None = None
     ) -> Result[list[KnowledgeChunk], Exception]: ...
 
     @abstractmethod

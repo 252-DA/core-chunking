@@ -126,3 +126,17 @@ def test_replace_relations_with_no_chunks_is_a_noop():
         course_id="x", chunk_ids=[], extraction_version="v1", model=None, relations=[]
     ).unwrap() == 0
     assert cursor.sql == []
+
+
+def test_list_page_chunks_resolves_and_filters_by_course_when_given():
+    cursor = _Cursor(
+        [
+            [("00000000-0000-0000-0000-000000000099",)],
+            [("c1", "d1", 0, ["Ch 1"], 3, "nội dung trang 3")],
+        ]
+    )
+    chunks = _Repo(cursor).list_page_chunks("d1", 3, course_id="CO3137").unwrap()
+    assert len(chunks) == 1
+    assert chunks[0].chunk_id == "c1"
+    assert any("d.course_id = %s::uuid" in s for s in cursor.sql)
+    assert cursor.params[-1][2] == "00000000-0000-0000-0000-000000000099"

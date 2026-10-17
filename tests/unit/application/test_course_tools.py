@@ -49,7 +49,8 @@ def test_page_lookup_caps_chunk_size_and_reports_total():
     knowledge = MagicMock()
     long = "x" * (MAX_CHUNK_CHARS + 50)
     knowledge.list_page_chunks.return_value = Ok([_chunk(1, long)] + [_chunk(i) for i in range(2, 13)])
-    out = _tools(knowledge).get_document_page("d1", 3).unwrap()
+    out = _tools(knowledge).get_document_page("d1", 3, "CO3137").unwrap()
+    knowledge.list_page_chunks.assert_called_once_with("d1", 3, "CO3137")
     assert out["total_chunks"] == 12
     assert len(out["chunks"]) == 8
     assert out["chunks"][0]["truncated"] is True
