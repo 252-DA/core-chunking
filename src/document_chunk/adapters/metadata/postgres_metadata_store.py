@@ -11,6 +11,9 @@ from document_chunk.adapters.metadata.postgres_answer_grading_repository import 
 from document_chunk.adapters.metadata.postgres_chunk_repository import (
     PostgresChunkRepository,
 )
+from document_chunk.adapters.metadata.postgres_course_knowledge_repository import (
+    PostgresCourseKnowledgeRepository,
+)
 from document_chunk.adapters.metadata.postgres_curriculum_repository import (
     PostgresCurriculumRepository,
 )
@@ -46,6 +49,7 @@ class PostgresMetadataStore(
     PostgresOutboxRepository,
     PostgresLlmUsageRepository,
     PostgresAnswerGradingRepository,
+    PostgresCourseKnowledgeRepository,
     IMetadataStore,
 ):
     """PostgreSQL metadata facade composed from domain-focused repositories."""

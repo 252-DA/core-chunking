@@ -147,7 +147,7 @@ class TestLlmConfig:
         # ai-sdk (docs/model-routing-design.md).
         cfg = LlmConfig()
         assert cfg.provider == "gemini"
-        assert cfg.model == "gemini-3-flash-preview"
+        assert cfg.model == "gemini-3.1-flash-lite"
         assert cfg.temperature == 0.2
         assert cfg.timeout_seconds == 60
 
@@ -158,7 +158,7 @@ class TestLlmConfig:
         assert LlmConfig().model == "from-nested"
 
         monkeypatch.delenv("LLM__MODEL")
-        assert LlmConfig().model == "gemini-3-flash-preview"
+        assert LlmConfig().model == "gemini-3.1-flash-lite"
 
 
 class TestTracingConfig:

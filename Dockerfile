@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src" \
     LLM__PROVIDER=gemini \
-    LLM__MODEL=gemini-3-flash-preview
+    LLM__MODEL=gemini-3.1-flash-lite
 
 # System deps for python-magic, psycopg binary, etc.
 RUN apt-get update && \

@@ -213,7 +213,7 @@ class LlmConfig(BaseSettings):
     """
 
     provider: Literal["gemini", "openai-compatible", "deepseek"] = "gemini"
-    model: str = "gemini-3-flash-preview"
+    model: str = "gemini-3.1-flash-lite"
     api_key: str | None = None
     base_url: str | None = None
     temperature: float = 0.2
