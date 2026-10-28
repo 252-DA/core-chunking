@@ -43,11 +43,13 @@ def prepare_sections(parsed, counter):
         return parsed.sections
     sections = []
     title = parsed.metadata.get("title")
+    title_page = None
     if not title and parsed.sections and counter.count(parsed.sections[0].content) <= 12:
         title = parsed.sections[0].heading
+        title_page = parsed.sections[0].page_number
     offset = 1 if title else 0
     if title:
-        sections.append(Section(title, ElementType.HEADING, title, 1))
+        sections.append(Section(title, ElementType.HEADING, title, 1, title_page))
     has_divider = False
     last_title = None
     for sec in parsed.sections:

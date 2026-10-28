@@ -300,3 +300,31 @@ def test_slides_merge_across_pages_by_default(counter):
 
     assert len(chunks) < 4
     assert any(c.metadata.page_end != c.metadata.page_start for c in chunks)
+
+
+def test_merged_chunk_cites_the_page_holding_most_of_its_text(counter):
+    # Slide ngăn mục chỉ có tiêu đề bị gộp vào slide nội dung phía sau; trích
+    # dẫn phải trỏ tới trang nội dung chứ không phải trang tiêu đề.
+    deck = [
+        (1, "Finding similar items", []),
+        (26, "Min-Hashing", []),
+        (
+            27,
+            "The Min-Hash property",
+            [
+                "Choose a random permutation of the rows.",
+                "Claim: the probability that two columns get the same min-hash "
+                "equals their Jaccard similarity.",
+            ],
+        ),
+    ]
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(deck)).unwrap()
+
+    claim = next(c for c in chunks if "Claim" in c.content).metadata
+    assert claim.page_start < claim.page_end == 27
+    assert claim.page_number == 27
+    # Nhãn nguồn khớp với trang được trích: tiêu đề của slide trang 27.
+    assert claim.heading_path[-1] == "The Min-Hash property"
+    # Trang bìa chỉ có tên bài vẫn mang số trang của nó.
+    assert min(c.metadata.page_start for c in chunks) == 1

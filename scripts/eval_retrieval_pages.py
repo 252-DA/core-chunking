@@ -9,6 +9,7 @@ Mỗi biến thể = cách parse PDF × chunker:
 Câu hỏi gán nhãn bằng (tên file, trang), nên dùng lại được sau mỗi lần đổi
 parser/chunker; chunk_id thì không (uuid4, đổi mỗi lần index). Định dạng giống
 ai-tutor/eval/questions.seed.jsonl: {"id", "question", "evidence": [{"document", "page"}]}.
+Bộ câu dùng cho đo này: packages-ai/eval/retrieval_questions.jsonl (xem README cùng thư mục).
 
 Chạy trong container document-worker (có PyMuPDF, Docling, tokenizer, embedding-service):
 
@@ -33,9 +34,12 @@ import json
 import math
 import multiprocessing
 import pickle
+import random
 import re
 import statistics
 import sys
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,7 +124,7 @@ def _parse_one(path: Path, mode: str, target: Path, cache: Path, ocr: bool) -> s
 
     _CachedDocling.cache = cache
     adaptive.DoclingPdfParser = _CachedDocling
-    # Không OCR: trang ảnh không có chữ ở mọi biến thể như nhau; nhanh và không treo.
+    # Không OCR: trang ảnh không có chữ ở mọi biến thể như nhau; nhanh, không nạp Docling.
     options = {} if ocr else {"pdf_page_fallback_enabled": False, "pdf_strict_missing_text": False}
     parser = (
         PptxParser(ParserConfig())
@@ -146,8 +150,17 @@ def parse_all(docs: Path, cache: Path, mode: str, ocr: bool) -> dict:
         target = cache / f"parsed-{key}{'' if ocr else '-noocr'}-{_digest(path.name)}.pkl"
         if not target.exists():
             print(f"  parse [{key}] {path.name}", file=sys.stderr, flush=True)
-            with spawn.Pool(1) as pool:
-                error = pool.apply(_parse_one, (path, key, target, cache, ocr))
+            # Không dùng multiprocessing.Pool: khi kernel OOM kill tiến trình con,
+            # Pool lặng lẽ tạo tiến trình mới và apply() chờ mãi (Ch2 trang 52,
+            # 2026-10-27). Executor báo BrokenProcessPool ngay.
+            with ProcessPoolExecutor(1, mp_context=spawn) as pool:
+                try:
+                    error = pool.submit(_parse_one, path, key, target, cache, ocr).result()
+                except BrokenProcessPool:
+                    raise SystemExit(
+                        f"parse failed: {path.name}: tiến trình con chết đột ngột "
+                        "(thường là kernel OOM kill, xem dmesg)"
+                    ) from None
             if error:
                 raise SystemExit(f"parse failed: {error}")
         parsed[path.name] = pickle.loads(target.read_bytes())
@@ -271,6 +284,35 @@ def score_variant(rows: list[Row], questions: list[dict], cache: EmbeddingCache)
     return {k: round(v / n, 3) for k, v in totals.items()}, detail
 
 
+def paired(base: list[dict], other: list[dict], name: str) -> str:
+    """
+    Chênh lệch trên cùng câu hỏi, không phải hai trung bình độc lập: vài chục câu
+    thì 1–2 câu đổi hạng đã làm trung bình lệch vài phần trăm.
+    """
+    def rr(row):
+        return 1 / row["first_rank"] if row["first_rank"] else 0.0
+
+    def hit(row):
+        return bool(row["first_rank"] and row["first_rank"] <= 6)
+
+    other_by_id = {row["id"]: row for row in other}
+    pairs = [(row, other_by_id[row["id"]]) for row in base]
+    diffs = [rr(b) - rr(o) for b, o in pairs]
+    rng = random.Random(0)
+    boots = sorted(
+        statistics.fmean(rng.choice(diffs) for _ in diffs) for _ in range(10_000)
+    )
+    low, high = -boots[int(0.975 * len(boots))], -boots[int(0.025 * len(boots))]
+    better = sum(hit(o) and not hit(b) for b, o in pairs)
+    worse = sum(hit(b) and not hit(o) for b, o in pairs)
+    n = better + worse
+    tail = sum(math.comb(n, k) for k in range(min(better, worse) + 1)) / 2**n if n else 1.0
+    return (
+        f"| {name} | {-statistics.fmean(diffs):+.3f} | [{low:+.3f}, {high:+.3f}] "
+        f"| +{better} / −{worse} | {min(1.0, 2 * tail):.2f} |"
+    )
+
+
 def _title(text: str) -> str:
     # v2 gộp "Bloom filtering (2)" vào "Bloom filtering": vẫn là cùng tiêu đề.
     return re.sub(r"\s*\((?:\d+|tiếp|cont\.)\)$", "", " ".join(text.split()), flags=re.I).casefold()
@@ -363,6 +405,13 @@ def main() -> int:
     for name, result in results.items():
         cells = [str(result["metrics"][c]) for c in columns] + [str(result["structure"][c]) for c in shape]
         print(f"| {name} | " + " | ".join(cells) + " |")
+    names = list(results)
+    if len(names) > 1:
+        print(f"\nSo với {names[0]} trên cùng từng câu (bootstrap 10.000 lần, McNemar chính xác):\n")
+        print("| variant | ΔMRR@10 | 95% CI | hit@6 hơn/kém | p (McNemar) |")
+        print("|---|---|---|---|---|")
+        for name in names[1:]:
+            print(paired(results[names[0]]["detail"], results[name]["detail"], name))
     if args.detail:
         with args.detail.open("w") as out:
             for name, result in results.items():
