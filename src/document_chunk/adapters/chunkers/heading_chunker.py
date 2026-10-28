@@ -87,16 +87,14 @@ class HeadingChunker(IChunker):
             span.set_attribute("doc_type", doc.document.doc_type.value)
             span.set_attribute("sections", len(doc.sections))
             try:
-                if doc.document.doc_type == DocumentType.PPTX:
+                if doc.is_slides:
                     chunks = self._chunk_by_slides(doc)
                 else:
                     annotated = annotate_toc(doc.sections)
                     if annotated is not doc.sections:
                         logger.debug("toc.detected", document_id=doc.document.id)
                         doc = dc_replace(doc, sections=annotated)
-                    chunks = self._chunk_by_headings(doc)
-
-                chunks = self._merge_small_chunks(chunks, doc.document.doc_type)
+                    chunks = self._merge_small_chunks(self._chunk_by_headings(doc))
 
                 span.set_attribute("chunks.count", len(chunks))
                 logger.debug(
@@ -192,17 +190,20 @@ class HeadingChunker(IChunker):
         return chunks
 
     # ------------------------------------------------------------------
-    # Strategy 2: Slide-based (PPTX)
+    # Strategy 2: Slide-based (PPTX, PDF slide)
     # ------------------------------------------------------------------
 
     def _chunk_by_slides(self, doc: ParsedDocument) -> list[Chunk]:
         chunks: list[Chunk] = []
+        last_heading: str | None = None
 
         for idx, section in enumerate(doc.sections):
             if not section.content.strip():
                 continue
 
-            heading = section.heading or f"Slide {idx + 1}"
+            # Slide không tiêu đề thường là phần tiếp của slide trước.
+            heading = section.heading or last_heading or f"Slide {idx + 1}"
+            last_heading = heading
             content = section.content
 
             # Slide quá lớn → split
@@ -310,15 +311,13 @@ class HeadingChunker(IChunker):
 
         return chunks if chunks else [text]
 
-    def _merge_small_chunks(
-        self, chunks: list[Chunk], doc_type: DocumentType
-    ) -> list[Chunk]:
+    def _merge_small_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
         """
         Merge các chunks nhỏ hơn min_size với chunk kế tiếp
         nếu cùng heading parent.
-        PPTX: không merge — mỗi slide là độc lập.
+        Slide không đi qua đây — mỗi slide là độc lập.
         """
-        if doc_type == DocumentType.PPTX or len(chunks) <= 1:
+        if len(chunks) <= 1:
             return chunks
 
         merged: list[Chunk] = []

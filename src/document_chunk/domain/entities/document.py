@@ -74,6 +74,14 @@ class ParsedDocument:
     metadata: dict = field(default_factory=dict)
 
     @property
+    def is_slides(self) -> bool:
+        """PPTX, hoặc PDF mà parser đã đọc theo slide (``metadata['layout']``)."""
+        return (
+            self.document.doc_type == DocumentType.PPTX
+            or self.metadata.get("layout") == "slides"
+        )
+
+    @property
     def total_content_length(self) -> int:
         return sum(len(s.content) for s in self.sections)
 

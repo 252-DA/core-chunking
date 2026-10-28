@@ -115,6 +115,11 @@ class ParserConfig(BaseSettings):
     pdf_max_fallback_ranges: int = 8           # số lần gọi layout backend tối đa
     pdf_strict_missing_text: bool = True       # còn trang chưa ai đọc → Err, không Ok
 
+    # PDF xuất từ slide: mỗi trang thành một Section SLIDE như PPTX, tiêu đề là
+    # khối chữ lớn nhất trang (xem pdf_slides.py). "auto" nhận theo khổ ngang và
+    # mật độ chữ; "never" giữ cách đoán heading theo cỡ chữ trên cả file.
+    pdf_slide_mode: Literal["auto", "always", "never"] = "never"
+
     # PPTX
     pptx_include_notes: bool = True   # include speaker notes vào content
 
@@ -144,6 +149,9 @@ class ChunkerConfig(BaseSettings):
     tokenizer_path: str | None = None
     index_toc: bool = False
     merge_across_top_level: bool = False
+    # Slide (PPTX hoặc PDF slide): không ghép hai trang vào một chunk, để
+    # page_number của chunk đúng là trang chứa nội dung.
+    split_slides_by_page: bool = False
 
     @model_validator(mode="after")
     def validate_budgets(self):

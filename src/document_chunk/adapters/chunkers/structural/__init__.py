@@ -36,6 +36,7 @@ class StructuralChunker(IChunker):
     def chunk(self, document):
         try:
             nodes, removed = build_nodes(document, self.counter, self.config)
+            split_pages = self.config.split_slides_by_page and document.is_slides
             drafts = []
             for node in nodes:
                 units = []
@@ -46,8 +47,8 @@ class StructuralChunker(IChunker):
                         for continuation in block_units[1:]:
                             continuation.block = replace(block, images=())
                     units.extend(block_units)
-                drafts.extend(pack(node, units, self.counter, self.config))
-            drafts, merges = consolidate(drafts, self.counter, self.config)
+                drafts.extend(pack(node, units, self.counter, self.config, split_pages))
+            drafts, merges = consolidate(drafts, self.counter, self.config, split_pages)
             chunks = []
             ancestors = {node.path: node for node in nodes}
             cfg = self.config

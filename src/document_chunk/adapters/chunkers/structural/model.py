@@ -46,11 +46,16 @@ def render(draft: Draft) -> str:
     parts = []
     for run in draft.runs:
         extra = run.node.path[len(draft.path) :]
-        if extra and run.starts_node:
+        named = bool(extra) and run.starts_node
+        if named:
             parts.append(" > ".join(extra))
+        # Khối "title" chỉ giữ tên slide; đã in tên ở trên thì không in lại.
+        units = [u for u in run.units if not (named and u.block.kind == "title")]
+        if not units:
+            continue
         text = ""
         seen = set()
-        for unit in run.units:
+        for unit in units:
             # Tables with identical headers still have different identities.
             if unit.header and unit.block.source not in seen:
                 text += ("\n\n" if text else "") + unit.header + "\n" + unit.text

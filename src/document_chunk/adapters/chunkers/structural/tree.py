@@ -39,7 +39,7 @@ def toc_flags(sections):
 
 
 def prepare_sections(parsed, counter):
-    if parsed.document.doc_type != DocumentType.PPTX:
+    if not parsed.is_slides:
         return parsed.sections
     sections = []
     title = parsed.metadata.get("title")
@@ -90,6 +90,8 @@ def build_nodes(parsed, counter, config):
     root = Node((), 0, 0)
     nodes, stack = [root], [root]
     removed = 0
+    # Trang và vị trí của heading tạo ra mỗi node, để giữ tiêu đề slide không có chữ.
+    origin = {}
     sections = prepare_sections(parsed, counter)
     for index, (sec, is_toc) in enumerate(zip(sections, toc_flags(sections))):
         if is_toc and not config.index_toc:
@@ -118,6 +120,7 @@ def build_nodes(parsed, counter, config):
                 while stack[-1].level >= level:
                     stack.pop()
                 node = Node(stack[-1].path + (title,), level, len(nodes))
+                origin[node.ordinal] = (sec.page_number, index)
                 nodes.append(node)
                 stack.append(node)
             if sec.element_type == ElementType.HEADING:
@@ -160,5 +163,11 @@ def build_nodes(parsed, counter, config):
             target = candidates[-1] if candidates else following[0] if following else None
             if target:
                 target.images = tuple(dict.fromkeys(target.images + block.images))
+        images = tuple(dict.fromkeys(i for b in node.blocks if not b.text for i in b.images))
         node.blocks = [b for b in node.blocks if b.text]
+        if parsed.is_slides and node.path and not node.blocks:
+            # Slide chỉ có tiêu đề và hình (Velocity, Veracity...): nếu bỏ node
+            # rỗng thì tiêu đề, tức chủ đề của slide, biến mất khỏi mọi chunk.
+            page, source = origin.get(node.ordinal, (None, 0))
+            node.blocks.append(Block(node.path[-1], "title", page, images, source))
     return nodes, removed

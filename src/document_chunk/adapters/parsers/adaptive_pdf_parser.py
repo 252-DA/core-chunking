@@ -36,6 +36,7 @@ from document_chunk.adapters.parsers.docling_pdf_parser import (
 from document_chunk.adapters.parsers.docling_pdf_parser import DoclingPdfParser
 from document_chunk.adapters.parsers.pdf_parser import PARSER_NAME as TEXT_BACKEND
 from document_chunk.adapters.parsers.pdf_parser import PdfParser
+from document_chunk.adapters.parsers.pdf_slides import fold_into_slide
 from document_chunk.domain.entities.document import (
     DocumentType,
     ParsedDocument,
@@ -213,9 +214,17 @@ class AdaptivePdfParser(IParser):
         for section in parsed.sections:
             by_page.setdefault(section.page_number, []).append(section)
 
+        slides = parsed.metadata.get("layout") == "slides"
         merged: list[Section] = []
         for page in range(1, parsed.page_count + 1):
-            merged.extend(replacements.get(page) or by_page.get(page, []))
+            original = by_page.get(page, [])
+            replacement = replacements.get(page)
+            if replacement and slides:
+                # Một trang vẫn là một slide, dù Docling trả về nhiều khối.
+                folded = fold_into_slide(page, replacement, original[0] if original else None)
+                merged.extend([folded] if folded else original)
+            else:
+                merged.extend(replacement or original)
         merged.extend(by_page.get(None, []))
         return merged
 
@@ -259,7 +268,29 @@ class AdaptivePdfParser(IParser):
         parsed = result.unwrap()
         if text_parsed is not None:
             self._carry_over_report(parsed, text_parsed)
+            if text_parsed.metadata.get("layout") == "slides":
+                self._as_slides(parsed, text_parsed)
         return self._finalize(path, parsed)
+
+    def _as_slides(self, parsed: ParsedDocument, text_parsed: ParsedDocument) -> None:
+        """Docling đọc lại cả file slide: gộp lại mỗi trang một slide như text path."""
+        replacements: dict[int, list[Section]] = {}
+        for section in parsed.sections:
+            if section.page_number is not None:
+                replacements.setdefault(section.page_number, []).append(section)
+        text_slides = {s.page_number: s for s in text_parsed.sections}
+        sections = []
+        for page in sorted(set(replacements) | {p for p in text_slides if p is not None}):
+            original = text_slides.get(page)
+            folded = (
+                fold_into_slide(page, replacements[page], original)
+                if page in replacements
+                else original
+            )
+            if folded is not None:
+                sections.append(folded)
+        parsed.sections = sections
+        parsed.metadata["layout"] = "slides"
 
     def _carry_over_report(
         self, parsed: ParsedDocument, text_parsed: ParsedDocument

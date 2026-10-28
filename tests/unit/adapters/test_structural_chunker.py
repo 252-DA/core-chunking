@@ -253,3 +253,50 @@ def test_real_bge_tokenizer_budget():
         ],
     )
     assert len(chunks) > 1
+
+
+def pdf_slides(slides):
+    """PDF đã đọc theo slide: (trang, tiêu đề, các khối chữ)."""
+    from document_chunk.adapters.parsers.pdf_slides import slide_section
+
+    sections = [
+        slide_section(page, title, [{"kind": "text", "text": t} for t in texts], source={})
+        for page, title, texts in slides
+    ]
+    document = Document("doc-1", "deck.pdf", None, DocumentType.PDF, 0, "application/pdf")
+    return ParsedDocument(document, sections, len(slides), metadata={"layout": "slides"})
+
+
+FOUR_VS = [
+    (1, "Big data", ["Big data is described by four properties."]),
+    (2, "Velocity", ["Data is generated fast and needs to be processed fast."]),
+    (3, "Veracity", []),  # chỉ có tiêu đề và hình
+    (4, "Value", ["Translate data into business advantage."]),
+]
+
+
+def test_title_only_slide_keeps_its_title(counter):
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    text = "\n".join(c.content + " " + " > ".join(c.metadata.heading_path) for c in chunks)
+    assert "Veracity" in text
+    # Gộp với slide bên cạnh thì tên slide chỉ in một lần.
+    assert all(c.content.count("Veracity") <= 1 for c in chunks)
+
+
+def test_split_slides_by_page_keeps_page_number_exact(counter):
+    cfg = ChunkerConfig(strategy="structural", split_slides_by_page=True)
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    assert [c.metadata.page_number for c in chunks] == [1, 2, 3, 4]
+    assert all(c.metadata.page_start == c.metadata.page_end for c in chunks)
+    assert chunks[2].content == "Veracity"
+
+
+def test_slides_merge_across_pages_by_default(counter):
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    assert len(chunks) < 4
+    assert any(c.metadata.page_end != c.metadata.page_start for c in chunks)
