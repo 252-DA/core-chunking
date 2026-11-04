@@ -54,6 +54,7 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                                      AND c.deleted_at IS NULL
                         WHERE d.course_id = %s::uuid
                           AND d.deleted_at IS NULL
+                          AND d.lms_published IS NOT FALSE
                           AND (%s::text IS NULL OR d.chapter_code = %s::text)
                         GROUP BY d.document_id, d.title, d.role, d.chapter_code
                         ORDER BY d.chapter_code NULLS LAST, d.title;
@@ -77,6 +78,27 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
+    def list_unpublished_document_ids(
+        self, course_id: str | None = None
+    ) -> Result[list[str], Exception]:
+        """Id tài liệu bị ẩn ở LMS (lms_published = false); NULL là không đến từ LMS nên vẫn hiện."""
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    course_uuid = self._resolve_course(cur, course_id) if course_id else None
+                    cur.execute(
+                        """
+                        SELECT d.document_id::text
+                        FROM documents d
+                        WHERE d.lms_published IS FALSE
+                          AND (%s::uuid IS NULL OR d.course_id = %s::uuid);
+                        """,
+                        (course_uuid, course_uuid),
+                    )
+                    return Ok([r[0] for r in cur.fetchall()])
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
+
     def list_page_chunks(
         self, document_id: str, page_number: int, course_id: str | None = None
     ) -> Result[list[KnowledgeChunk], Exception]:
@@ -94,6 +116,7 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                           AND (%s::uuid IS NULL OR d.course_id = %s::uuid)
                           AND c.deleted_at IS NULL
                           AND d.deleted_at IS NULL
+                          AND d.lms_published IS NOT FALSE
                         ORDER BY c.sort_order;
                         """,
                         (stable_uuid(document_id), page_number, course_uuid, course_uuid),
@@ -115,7 +138,8 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                         JOIN documents d ON d.document_id = c.document_id
                         WHERE c.chunk_id = %s::uuid
                           AND c.deleted_at IS NULL
-                          AND d.deleted_at IS NULL;
+                          AND d.deleted_at IS NULL
+                          AND d.lms_published IS NOT FALSE;
                         """,
                         (stable_uuid(chunk_id),),
                     )
@@ -126,8 +150,10 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                         f"""
                         SELECT {_CHUNK_COLUMNS}
                         FROM chunks c
+                        JOIN documents d ON d.document_id = c.document_id
                         WHERE c.document_id = %s::uuid
                           AND c.deleted_at IS NULL
+                          AND d.lms_published IS NOT FALSE
                           AND c.sort_order BETWEEN %s AND %s
                         ORDER BY c.sort_order;
                         """,
@@ -273,11 +299,15 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                 SELECT kr.source_key AS k
                 FROM knowledge_relations kr
                 JOIN chunks c ON c.chunk_id = kr.chunk_id AND c.deleted_at IS NULL
+                JOIN documents d ON d.document_id = kr.document_id
+                                AND d.lms_published IS NOT FALSE
                 WHERE kr.course_id = %s::uuid
                 UNION ALL
                 SELECT kr.target_key
                 FROM knowledge_relations kr
                 JOIN chunks c ON c.chunk_id = kr.chunk_id AND c.deleted_at IS NULL
+                JOIN documents d ON d.document_id = kr.document_id
+                                AND d.lms_published IS NOT FALSE
                 WHERE kr.course_id = %s::uuid
             ) nodes
             WHERE k = %s
@@ -303,6 +333,7 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
             FROM knowledge_relations kr
             JOIN chunks c ON c.chunk_id = kr.chunk_id AND c.deleted_at IS NULL
             JOIN documents d ON d.document_id = kr.document_id AND d.deleted_at IS NULL
+                                 AND d.lms_published IS NOT FALSE
             WHERE kr.course_id = %s::uuid
               AND (kr.source_key = ANY(%s) OR kr.target_key = ANY(%s))
             ORDER BY kr.created_at, kr.relation_id;

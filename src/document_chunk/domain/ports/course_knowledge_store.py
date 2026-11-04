@@ -68,6 +68,12 @@ class ICourseKnowledgeStore(ABC):
     ) -> Result[list[CourseDocumentInfo], Exception]: ...
 
     @abstractmethod
+    def list_unpublished_document_ids(
+        self, course_id: str | None = None
+    ) -> Result[list[str], Exception]:
+        """Id các tài liệu bị ẩn ở LMS (``lms_published = false``) của khóa học (hoặc mọi khóa nếu None)."""
+
+    @abstractmethod
     def list_page_chunks(
         self, document_id: str, page_number: int, course_id: str | None = None
     ) -> Result[list[KnowledgeChunk], Exception]: ...

@@ -140,3 +140,71 @@ def test_list_page_chunks_resolves_and_filters_by_course_when_given():
     assert chunks[0].chunk_id == "c1"
     assert any("d.course_id = %s::uuid" in s for s in cursor.sql)
     assert cursor.params[-1][2] == "00000000-0000-0000-0000-000000000099"
+
+
+# ---- tài liệu bị ẩn ở LMS (lms_published = false) không được lọt vào công cụ chatbot ----
+
+_NOT_HIDDEN = "d.lms_published IS NOT FALSE"
+
+
+def test_list_course_documents_skips_unpublished():
+    cursor = _Cursor([[("course-uuid",)], []])
+    _Repo(cursor).list_course_documents("CO3137").unwrap()
+    assert _NOT_HIDDEN in cursor.sql[-1]
+
+
+def test_list_page_chunks_skips_unpublished():
+    cursor = _Cursor([[("course-uuid",)], []])
+    _Repo(cursor).list_page_chunks("d1", 3, course_id="CO3137").unwrap()
+    assert _NOT_HIDDEN in cursor.sql[-1]
+
+
+def test_neighbor_anchor_and_window_queries_both_skip_unpublished():
+    cursor = _Cursor([[("d1", 4)], [("c3", "d1", 3, ["Ch 1"], 2, "x")]])
+    chunks = _Repo(cursor).get_neighbor_chunks("c4", 1).unwrap()
+    assert len(chunks) == 1
+    assert len(cursor.sql) == 2
+    assert all(_NOT_HIDDEN in sql for sql in cursor.sql)
+    assert "JOIN documents d" in cursor.sql[1]
+
+
+def test_neighbors_of_hidden_anchor_return_nothing_without_second_query():
+    cursor = _Cursor([[]])  # anchor bị loại vì tài liệu bị ẩn
+    assert _Repo(cursor).get_neighbor_chunks("c4", 1).unwrap() == []
+    assert len(cursor.sql) == 1
+
+
+def test_relation_seeds_and_edges_skip_unpublished():
+    cursor = _Cursor(
+        [
+            [("course-uuid",)],
+            [("deadlock", 3)],
+            [_edge("r1", "A", "cause", "Deadlock", "a", "deadlock")],
+        ]
+    )
+    _Repo(cursor).find_relations("CO3137", "deadlock", 1, 10).unwrap()
+    seed_sql, edge_sql = cursor.sql[1], cursor.sql[2]
+    assert seed_sql.count(_NOT_HIDDEN) == 2  # cả hai nhánh UNION
+    assert _NOT_HIDDEN in edge_sql
+
+
+def test_worker_paths_still_see_unpublished_documents():
+    cursor = _Cursor([[]])
+    _Repo(cursor).list_document_chunks("d1").unwrap()
+    assert "lms_published" not in cursor.sql[0]
+
+
+def test_list_unpublished_document_ids_scopes_to_resolved_course():
+    cursor = _Cursor([[("course-uuid",)], [("doc-a",), ("doc-b",)]])
+    ids = _Repo(cursor).list_unpublished_document_ids("CO3137").unwrap()
+    assert ids == ["doc-a", "doc-b"]
+    assert "d.lms_published IS FALSE" in cursor.sql[-1]
+    assert cursor.params[-1] == ("course-uuid", "course-uuid")
+
+
+def test_list_unpublished_document_ids_without_course_covers_every_course():
+    cursor = _Cursor([[("doc-a",)]])
+    ids = _Repo(cursor).list_unpublished_document_ids().unwrap()
+    assert ids == ["doc-a"]
+    assert len(cursor.sql) == 1  # không tra khóa học
+    assert cursor.params[-1] == (None, None)
