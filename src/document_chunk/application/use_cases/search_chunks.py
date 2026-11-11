@@ -29,7 +29,7 @@ class SearchChunksUseCase:
     ) -> None:
         self._embedder = embedder
         self._vector_store = vector_store
-        # Chỉ cần khi request.exclude_unpublished: tra id tài liệu bị ẩn ở Postgres.
+        # Chỉ cần khi request.exclude_hidden: tra id tài liệu bị ẩn/đã xoá ở Postgres.
         self._knowledge_store = knowledge_store
 
     def execute(self, request: SearchRequest) -> Result[SearchResponse, Exception]:
@@ -41,15 +41,16 @@ class SearchChunksUseCase:
 
             logger.info("search.started", query=request.query, top_k=request.top_k)
 
-            # 0. Tài liệu bị ẩn ở LMS. Payload Qdrant không giữ lms_published (và nó có
-            #    thể đổi sau khi index) nên luôn tra Postgres; lỗi thì từ chối, không rò.
+            # 0. Tài liệu bị ẩn ở LMS hoặc đã xoá. Payload Qdrant không giữ lms_published
+            #    (và nó có thể đổi sau khi index) và vector của tài liệu xoá được dọn bất
+            #    đồng bộ nên luôn tra Postgres; lỗi thì từ chối, không rò.
             hidden_ids: tuple[str, ...] = ()
-            if request.exclude_unpublished:
+            if request.exclude_hidden:
                 if self._knowledge_store is None:
                     return Err(
-                        ProcessingError("exclude_unpublished needs a knowledge store")
+                        ProcessingError("exclude_hidden needs a knowledge store")
                     )
-                hidden_result = self._knowledge_store.list_unpublished_document_ids(
+                hidden_result = self._knowledge_store.list_hidden_document_ids(
                     request.course_id
                 )
                 if hidden_result.is_err():

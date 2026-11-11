@@ -43,6 +43,8 @@ class PostgresDocumentPlacementRepository(PostgresRepositoryBase):
         confidence: float,
         reason: str,
     ) -> Result[bool, Exception]:
+        # LEGACY: ghi documents.chapter_*, chỉ MetadataStoreDocumentReporter (delivery
+        # gRPC/HTTP cũ, script backfill) gọi; worker báo chương qua worker_results.
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:

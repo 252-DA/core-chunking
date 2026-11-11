@@ -81,13 +81,9 @@ def curriculum():
 def seeded(store, curriculum):
     """Ghi đề cương và một tài liệu giảng dạy đã index."""
     from document_chunk.adapters.metadata.postgres_repository_utils import stable_uuid
-    from document_chunk.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
+    from tests.integration.curriculum_seed import seed_curriculum
 
-    use_case = IngestCurriculumUseCase(
-        parsers=[], curriculum_extractor=None,
-        metadata_store=store, graph_store=NoopGraphStore(),
-    )
-    assert use_case._persist_to_postgres(curriculum).is_ok()
+    assert seed_curriculum(store, curriculum).is_ok()
 
     course_uuid = stable_uuid(_COURSE)
     with store._connection() as conn:

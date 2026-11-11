@@ -24,7 +24,14 @@ logger = get_logger(__name__)
 
 
 class PostgresDocumentRepository(PostgresRepositoryBase):
-    """Document lifecycle and document-query persistence operations."""
+    """Document lifecycle and document-query persistence operations.
+
+    ``documents`` là bảng của core-api. Ba hàm ghi ở đây — ``upsert_document``,
+    ``update_document_status``, ``delete`` — chỉ còn cho delivery legacy
+    (gRPC/HTTP của packages-ai, compose profile "legacy"; worker không gọi). Khi
+    xoá delivery legacy thì xoá luôn ba hàm này và gỡ ngoại lệ tương ứng trong
+    worker/tests/unit/test_data_boundary_guard.py.
+    """
 
     def upsert_document(
         self,
@@ -32,6 +39,7 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
         metadata: dict[str, str],
         status: IngestionStatus = IngestionStatus.QUEUED,
     ) -> Result[None, Exception]:
+        # LEGACY: chỉ delivery gRPC/HTTP cũ gọi (EnqueueDocument/ProcessDocument).
         with tracer.start_as_current_span("postgres.upsert_document") as span:
             span.set_attribute("document.id", document.id)
             span.set_attribute("doc_type", document.doc_type.value)
@@ -86,6 +94,8 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
         status: IngestionStatus,
         error_msg: str | None = None,
     ) -> Result[None, Exception]:
+        # LEGACY: chỉ delivery gRPC/HTTP cũ (qua MetadataStoreDocumentReporter) gọi;
+        # worker báo trạng thái bằng DOCUMENT_PROCESSING_RESULT.
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -284,6 +294,9 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def delete(self, document_id: str) -> Result[None, Exception]:
+        # LEGACY: chỉ DeleteDocumentUseCase của delivery gRPC/HTTP cũ gọi. Đường
+        # chạy thật: core-api soft-delete documents + phát DOCUMENT_DELETED, worker
+        # ẩn chunks (soft_delete_document_chunks) và dọn Qdrant/Neo4j.
         event_id = str(uuid.uuid4())
         try:
             with self._connection() as conn:
@@ -338,6 +351,31 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
                 if row is None:
                     return Ok(None)
                 return Ok((IngestionStatus(row[0]), row[1], row[2]))
+            except Exception as exc:
+                return Err(
+                    MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc)
+                )
+
+    def get_document_processing_generation(
+        self, document_id: str
+    ) -> Result[int | None, Exception]:
+        # Chỉ SELECT: documents là bảng của core-api.
+        with tracer.start_as_current_span("postgres.get_document_processing_generation") as span:
+            span.set_attribute("document.id", document_id)
+            try:
+                with self._connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT processing_generation
+                            FROM documents
+                            WHERE document_id = %s::uuid
+                              AND deleted_at IS NULL;
+                            """,
+                            (document_id,),
+                        )
+                        row = cur.fetchone()
+                return Ok(None if row is None else int(row[0]))
             except Exception as exc:
                 return Err(
                     MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc)

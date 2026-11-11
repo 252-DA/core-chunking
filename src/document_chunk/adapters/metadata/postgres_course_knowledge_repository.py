@@ -78,10 +78,15 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
-    def list_unpublished_document_ids(
+    def list_hidden_document_ids(
         self, course_id: str | None = None
     ) -> Result[list[str], Exception]:
-        """Id tài liệu bị ẩn ở LMS (lms_published = false); NULL là không đến từ LMS nên vẫn hiện."""
+        """
+        Id tài liệu học viên không được thấy: bị ẩn ở LMS (lms_published = false; NULL là
+        không đến từ LMS nên vẫn hiện) hoặc đã xoá (deleted_at). Tài liệu xoá nằm trong
+        tập này vì vector trong Qdrant được dọn bất đồng bộ (DOCUMENT_DELETED qua
+        outbox): trước khi dọn xong, tìm kiếm vẫn trúng chunk của tài liệu đã xoá.
+        """
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
@@ -90,7 +95,7 @@ class PostgresCourseKnowledgeRepository(PostgresRepositoryBase, ICourseKnowledge
                         """
                         SELECT d.document_id::text
                         FROM documents d
-                        WHERE d.lms_published IS FALSE
+                        WHERE (d.lms_published IS FALSE OR d.deleted_at IS NOT NULL)
                           AND (%s::uuid IS NULL OR d.course_id = %s::uuid);
                         """,
                         (course_uuid, course_uuid),

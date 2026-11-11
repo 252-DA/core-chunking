@@ -194,17 +194,19 @@ def test_worker_paths_still_see_unpublished_documents():
     assert "lms_published" not in cursor.sql[0]
 
 
-def test_list_unpublished_document_ids_scopes_to_resolved_course():
+def test_list_hidden_document_ids_scopes_to_resolved_course():
     cursor = _Cursor([[("course-uuid",)], [("doc-a",), ("doc-b",)]])
-    ids = _Repo(cursor).list_unpublished_document_ids("CO3137").unwrap()
+    ids = _Repo(cursor).list_hidden_document_ids("CO3137").unwrap()
     assert ids == ["doc-a", "doc-b"]
     assert "d.lms_published IS FALSE" in cursor.sql[-1]
+    # Tài liệu đã xoá cũng bị ẩn: Qdrant được dọn bất đồng bộ.
+    assert "d.deleted_at IS NOT NULL" in cursor.sql[-1]
     assert cursor.params[-1] == ("course-uuid", "course-uuid")
 
 
-def test_list_unpublished_document_ids_without_course_covers_every_course():
+def test_list_hidden_document_ids_without_course_covers_every_course():
     cursor = _Cursor([[("doc-a",)]])
-    ids = _Repo(cursor).list_unpublished_document_ids().unwrap()
+    ids = _Repo(cursor).list_hidden_document_ids().unwrap()
     assert ids == ["doc-a"]
     assert len(cursor.sql) == 1  # không tra khóa học
     assert cursor.params[-1] == (None, None)

@@ -224,8 +224,6 @@ def mock_metadata_store(
     store.list_chunks.return_value = Ok([sample_stored_chunk_metadata])
     store.upsert_concepts.return_value = Ok(None)
     store.upsert_chunk_concepts.return_value = Ok(None)
-    store.persist_enrichment_batch.return_value = Ok("event-001")
-    store.persist_curriculum_quiz_items.return_value = Ok(None)
     store.list_lesson_cards.return_value = Ok([])
     store.list_quiz_items.return_value = Ok([])
     store.append_outbox_event.return_value = Ok("event-001")
@@ -233,6 +231,7 @@ def mock_metadata_store(
     store.list.return_value = Ok([sample_document])
     store.delete.return_value = Ok(None)
     store.get_document_status.return_value = Ok(None)
+    store.get_document_processing_generation.return_value = Ok(None)
     return store
 
 

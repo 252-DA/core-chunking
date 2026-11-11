@@ -1,12 +1,9 @@
 from document_chunk.domain.ports.graph_store import (
-    GraphAssessment,
-    GraphChapter,
     GraphChunk,
     GraphChunkConcept,
     GraphChunkLOEdge,
     GraphConcept,
     GraphDocument,
-    GraphLO,
     IGraphStore,
 )
 from document_chunk.shared.result import Ok, Result
@@ -31,19 +28,6 @@ class NoopGraphStore(IGraphStore):
         return Ok(None)
 
     def delete_document(self, document_id: str) -> Result[None, Exception]:
-        return Ok(None)
-
-    def upsert_curriculum_graph(
-        self,
-        course_id: str,
-        course_code: str,
-        course_title_vi: str,
-        chapters: list[GraphChapter],
-        los: list[GraphLO],
-        assessments: list[GraphAssessment],
-        lo_assessment_links: list[tuple[str, str]],
-        chapter_lo_links: list | None = None,
-    ) -> Result[None, Exception]:
         return Ok(None)
 
     def upsert_chunk_lo_mappings(

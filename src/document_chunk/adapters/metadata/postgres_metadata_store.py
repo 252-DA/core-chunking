@@ -5,9 +5,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, TypedDict, cast
 
-from document_chunk.adapters.metadata.postgres_answer_grading_repository import (
-    PostgresAnswerGradingRepository,
-)
 from document_chunk.adapters.metadata.postgres_chunk_repository import (
     PostgresChunkRepository,
 )
@@ -48,7 +45,6 @@ class PostgresMetadataStore(
     PostgresDocumentPlacementRepository,
     PostgresOutboxRepository,
     PostgresLlmUsageRepository,
-    PostgresAnswerGradingRepository,
     PostgresCourseKnowledgeRepository,
     IMetadataStore,
 ):

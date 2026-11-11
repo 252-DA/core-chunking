@@ -7,7 +7,6 @@ from document_chunk.domain.ports.metadata_store import (
     DocumentSummary,
     IMetadataStore,
     IngestionStatus,
-    StoredAnswerForGrading,
     StoredAssessment,
     StoredChapter,
     StoredChunkConcept,
@@ -20,10 +19,6 @@ from document_chunk.domain.ports.metadata_store import (
     StoredLessonCard,
     StoredQuizItem,
     StoredChapterLOLink,
-    StoredCourseGoal,
-    StoredCourseSession,
-    StoredExtractionIssue,
-    StoredLOAssessmentLink,
 )
 from document_chunk.shared.result import Ok, Result
 
@@ -62,6 +57,9 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[str, Exception]:
         return Ok("noop-event")
 
+    def soft_delete_document_chunks(self, document_id: str) -> Result[int, Exception]:
+        return Ok(0)
+
     def get_document_context(
         self,
         document_id: str,
@@ -80,11 +78,9 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[None, Exception]:
         return Ok(None)
 
-    def persist_enrichment_batch(
+    def persist_concept_enrichment(
         self,
         document_id: str,
-        lesson_cards: list[StoredLessonCard],
-        quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
         outbox_event_type: OutboxEventType | None = None,
@@ -93,21 +89,6 @@ class NoopMetadataStore(IMetadataStore):
         if outbox_event_type is None:
             return Ok(None)
         return Ok("noop-event")
-
-    def persist_curriculum_quiz_items(
-        self,
-        lo_id: str,
-        bloom_level: str | int | None,
-        quiz_items: list[StoredQuizItem],
-    ) -> Result[None, Exception]:
-        return Ok(None)
-
-    def persist_curriculum_lesson_cards(
-        self,
-        lo_id: str,
-        lesson_cards: list[StoredLessonCard],
-    ) -> Result[None, Exception]:
-        return Ok(None)
 
     def list_lesson_cards(self, document_id: str) -> Result[list[StoredLessonCard], Exception]:
         return Ok([])
@@ -142,18 +123,9 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
         return Ok(None)
 
-    def upsert_curriculum(
-        self,
-        course: StoredCourse,
-        chapters: list[StoredChapter],
-        learning_outcomes: list[StoredLearningOutcome],
-        assessments: list[StoredAssessment],
-        lo_assessment_links: list[StoredLOAssessmentLink],
-        chapter_lo_links: list[StoredChapterLOLink] | None = None,
-        goals: list[StoredCourseGoal] | None = None,
-        sessions: list[StoredCourseSession] | None = None,
-        issues: list[StoredExtractionIssue] | None = None,
-    ) -> Result[None, Exception]:
+    def get_document_processing_generation(
+        self, document_id: str
+    ) -> Result[int | None, Exception]:
         return Ok(None)
 
     def list_chapter_lo_links(
@@ -199,15 +171,6 @@ class NoopMetadataStore(IMetadataStore):
     def delete_inferred_chunk_lo_mappings(self, document_id: str):
         return Ok(0)
 
-    def update_content_generation_request(
-        self,
-        request_id: str,
-        status: str,
-        generated_count: int | None = None,
-        last_error: str | None = None,
-    ) -> Result[None, Exception]:
-        return Ok(None)
-
     def record_llm_usage(
         self,
         *,
@@ -224,33 +187,6 @@ class NoopMetadataStore(IMetadataStore):
         trace_id: str | None = None,
     ) -> Result[None, Exception]:
         return Ok(None)
-
-    def list_answers_for_grading(
-        self,
-        attempt_ids: list[str],
-    ) -> Result[list[StoredAnswerForGrading], Exception]:
-        return Ok([])
-
-    def save_answer_grade(
-        self,
-        *,
-        attempt_id: str,
-        score: float,
-        is_correct: bool,
-        feedback: str | None,
-    ) -> Result[bool, Exception]:
-        return Ok(False)
-
-    def mark_answer_needs_review(
-        self,
-        *,
-        attempt_id: str,
-        feedback: str,
-    ) -> Result[bool, Exception]:
-        return Ok(False)
-
-    def release_graded_attempts(self, attempt_ids: list[str]) -> Result[int, Exception]:
-        return Ok(0)
 
     # ------------------------------------------------------------------
     # LMS / web admin methods

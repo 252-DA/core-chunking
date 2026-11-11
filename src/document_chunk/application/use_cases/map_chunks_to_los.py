@@ -10,6 +10,10 @@ from document_chunk.domain.entities.curriculum import Curriculum
 from document_chunk.domain.exceptions import ProcessingError
 from document_chunk.domain.ports.chapter_matcher import ChapterProfile, IChapterMatcher
 from document_chunk.domain.ports.chunk_lo_mapper import IChunkLOMapper, MappingHints
+from document_chunk.domain.ports.document_reporter import (
+    IDocumentChapterReporter,
+    MetadataStoreDocumentReporter,
+)
 from document_chunk.domain.ports.graph_store import GraphChunkLOEdge, IGraphStore
 from document_chunk.domain.ports.metadata_store import (
     IMetadataStore,
@@ -88,12 +92,16 @@ class MapChunksToLosUseCase:
         graph_store: IGraphStore,
         lo_mapper: IChunkLOMapper,
         chapter_matcher: IChapterMatcher | None = None,
+        chapter_reporter: IDocumentChapterReporter | None = None,
     ) -> None:
         self._metadata_store = metadata_store
         self._graph_store = graph_store
         self._lo_mapper = lo_mapper
         # Không có matcher (script backfill, test) thì chỉ dùng chương đã biết.
         self._chapter_matcher = chapter_matcher
+        # documents là bảng của core-api: worker truyền reporter gửi kết quả về
+        # core-api; không truyền (delivery cũ, script) thì ghi thẳng như trước.
+        self._chapter_reporter = chapter_reporter or MetadataStoreDocumentReporter(metadata_store)
 
     def execute(
         self, request: MapChunksToLosRequest
@@ -318,9 +326,19 @@ class MapChunksToLosUseCase:
             f"Khớp nội dung với chương {match.chapter_code} (điểm {match.score:.2f}, "
             f"hơn chương {match.runner_up_code} {match.margin:.2f})"
         )
-        self._metadata_store.set_document_chapter(
+        reported = self._chapter_reporter.report_chapter(
             document_id, match.chapter_code, "content", match.score, reason
         )
+        if reported.is_err():
+            # Chương hiển thị cho giảng viên chỉ là gợi ý, còn map chunk → LO vẫn
+            # dùng chương vừa suy ra: báo lỗi (Redis) không đáng huỷ cả lượt map
+            # (hành vi cũ). Lần map sau sẽ báo lại.
+            logger.warning(
+                "map_chunks_to_los.chapter_report_failed",
+                document_id=document_id,
+                chapter=match.chapter_code,
+                error=str(reported.error),
+            )
         return match.chapter_code
 
     def _match_sections(

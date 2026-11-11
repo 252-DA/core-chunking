@@ -68,10 +68,14 @@ class ICourseKnowledgeStore(ABC):
     ) -> Result[list[CourseDocumentInfo], Exception]: ...
 
     @abstractmethod
-    def list_unpublished_document_ids(
+    def list_hidden_document_ids(
         self, course_id: str | None = None
     ) -> Result[list[str], Exception]:
-        """Id các tài liệu bị ẩn ở LMS (``lms_published = false``) của khóa học (hoặc mọi khóa nếu None)."""
+        """
+        Id các tài liệu học viên không được thấy của khóa học (hoặc mọi khóa nếu None): ẩn ở
+        LMS (``lms_published = false``) hoặc đã xoá (``deleted_at``), kể cả khi vector của
+        tài liệu xoá chưa được dọn khỏi Qdrant.
+        """
 
     @abstractmethod
     def list_page_chunks(

@@ -282,11 +282,10 @@ class Container:
     def ingest_curriculum_use_case(self):
         from document_chunk.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
         logger.debug("container.init", component="IngestCurriculumUseCase")
+        # Chỉ parse: đề cương do core-api ghi (docs/ke-hoach-ranh-gioi-du-lieu.md).
         return IngestCurriculumUseCase(
             parsers=self.parsers,
             curriculum_extractor=self.curriculum_extractor,
-            metadata_store=self.metadata_store,
-            graph_store=self.graph_store,
         )
 
     @cached_property
