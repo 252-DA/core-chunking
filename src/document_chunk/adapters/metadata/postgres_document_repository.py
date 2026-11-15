@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import builtins
-import uuid
 
 from document_chunk.adapters.metadata.postgres_repository_utils import (
     PostgresRepositoryBase,
 )
 from document_chunk.domain.entities.document import Document, DocumentType
-from document_chunk.domain.exceptions import DocumentStaleError, MetadataStoreError
-from document_chunk.domain.outbox_events import OutboxEventType
+from document_chunk.domain.exceptions import MetadataStoreError
 from document_chunk.domain.ports.metadata_store import (
     DocumentFilter,
     DocumentSummary,
@@ -24,113 +22,11 @@ logger = get_logger(__name__)
 
 
 class PostgresDocumentRepository(PostgresRepositoryBase):
-    """Document lifecycle and document-query persistence operations.
+    """Document read/query persistence operations.
 
-    ``documents`` là bảng của core-api. Ba hàm ghi ở đây — ``upsert_document``,
-    ``update_document_status``, ``delete`` — chỉ còn cho delivery legacy
-    (gRPC/HTTP của packages-ai, compose profile "legacy"; worker không gọi). Khi
-    xoá delivery legacy thì xoá luôn ba hàm này và gỡ ngoại lệ tương ứng trong
-    worker/tests/unit/test_data_boundary_guard.py.
+    ``documents`` là bảng của core-api; repository này chỉ cung cấp các truy vấn
+    đọc phục vụ worker và mcp-service.
     """
-
-    def upsert_document(
-        self,
-        document: Document,
-        metadata: dict[str, str],
-        status: IngestionStatus = IngestionStatus.QUEUED,
-    ) -> Result[None, Exception]:
-        # LEGACY: chỉ delivery gRPC/HTTP cũ gọi (EnqueueDocument/ProcessDocument).
-        with tracer.start_as_current_span("postgres.upsert_document") as span:
-            span.set_attribute("document.id", document.id)
-            span.set_attribute("doc_type", document.doc_type.value)
-            try:
-                with self._connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO documents (
-                                document_id,
-                                course_id,
-                                title,
-                                file_path,
-                                mime_type,
-                                checksum,
-                                status,
-                                created_by
-                            )
-                            VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s::uuid)
-                            ON CONFLICT (document_id)
-                            DO UPDATE SET
-                                course_id = EXCLUDED.course_id,
-                                title = EXCLUDED.title,
-                                file_path = EXCLUDED.file_path,
-                                mime_type = EXCLUDED.mime_type,
-                                checksum = EXCLUDED.checksum,
-                                status = EXCLUDED.status,
-                                created_by = COALESCE(EXCLUDED.created_by, documents.created_by),
-                                deleted_at = NULL;
-                            """,
-                            (
-                                document.id,
-                                metadata.get("course_id"),
-                                document.name,
-                                metadata.get("storage_key") or str(document.path or document.name),
-                                document.mime_type,
-                                metadata.get("checksum"),
-                                status.value,
-                                metadata.get("owner_id"),
-                            ),
-                        )
-                    conn.commit()
-                return Ok(None)
-            except Exception as exc:
-                return Err(
-                    MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc)
-                )
-
-    def update_document_status(
-        self,
-        document_id: str,
-        status: IngestionStatus,
-        error_msg: str | None = None,
-    ) -> Result[None, Exception]:
-        # LEGACY: chỉ delivery gRPC/HTTP cũ (qua MetadataStoreDocumentReporter) gọi;
-        # worker báo trạng thái bằng DOCUMENT_PROCESSING_RESULT.
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE documents
-                        SET status = %s
-                        WHERE document_id = %s::uuid
-                          AND deleted_at IS NULL;
-                        """,
-                        (status.value, document_id),
-                    )
-                    affected = cur.rowcount
-                if affected == 0:
-                    # Document missing or soft-deleted → worker must stop and
-                    # must NOT write derived data (delete race guard).
-                    return Err(
-                        DocumentStaleError(
-                            f"document {document_id} not found or deleted",
-                            document_id=document_id,
-                        )
-                    )
-                conn.commit()
-            if error_msg:
-                # documents table has no error column in this phase; log the
-                # error so it is not silently dropped (see plan Phase 0).
-                logger.error(
-                    "document.status.error",
-                    document_id=document_id,
-                    status=status.value,
-                    error=error_msg,
-                )
-            return Ok(None)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def get_document_context(
         self,
@@ -290,43 +186,6 @@ class PostgresDocumentRepository(PostgresRepositoryBase):
                 for row in rows
             ]
             return Ok(summaries)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
-
-    def delete(self, document_id: str) -> Result[None, Exception]:
-        # LEGACY: chỉ DeleteDocumentUseCase của delivery gRPC/HTTP cũ gọi. Đường
-        # chạy thật: core-api soft-delete documents + phát DOCUMENT_DELETED, worker
-        # ẩn chunks (soft_delete_document_chunks) và dọn Qdrant/Neo4j.
-        event_id = str(uuid.uuid4())
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    # Cancel obsolete pending projections for the deleted aggregate.
-                    cur.execute(
-                        """
-                        DELETE FROM outbox_events
-                        WHERE aggregate_id = %s::uuid
-                          AND status = 'PENDING';
-                        """,
-                        (document_id,),
-                    )
-                    self._append_outbox_event_cursor(
-                        cur=cur,
-                        event_id=event_id,
-                        event_type=OutboxEventType.DOCUMENT_DELETED,
-                        aggregate_id=document_id,
-                        payload={"document_id": document_id},
-                    )
-                    cur.execute(
-                        "UPDATE chunks SET deleted_at = NOW() WHERE document_id = %s::uuid;",
-                        (document_id,),
-                    )
-                    cur.execute(
-                        "UPDATE documents SET deleted_at = NOW() WHERE document_id = %s::uuid;",
-                        (document_id,),
-                    )
-                conn.commit()
-            return Ok(None)
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 

@@ -18,21 +18,6 @@ class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="APP_")
 
 
-class GrpcConfig(BaseSettings):
-    host: str = "0.0.0.0"
-    port: int = 50051
-    max_workers: int = 10
-
-    model_config = SettingsConfigDict(env_prefix="GRPC_")
-
-
-class HttpConfig(BaseSettings):
-    host: str = "0.0.0.0"
-    port: int = 8000
-
-    model_config = SettingsConfigDict(env_prefix="HTTP_")
-
-
 class McpConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
@@ -256,8 +241,6 @@ class MetricsConfig(BaseSettings):
 
 class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
-    grpc: GrpcConfig = Field(default_factory=GrpcConfig)
-    http: HttpConfig = Field(default_factory=HttpConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     minio: MinioConfig = Field(default_factory=MinioConfig)

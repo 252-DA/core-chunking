@@ -235,36 +235,8 @@ class IMetadataStore(ABC):
     Ranh giới dữ liệu (docs/ke-hoach-ranh-gioi-du-lieu.md): worker chỉ ghi bảng AI
     (chunks, chunk_lo_mappings, concepts, chunk_concepts, knowledge_relations,
     llm_usage_logs) và sự kiện của chính nó vào outbox_events. Bảng nghiệp vụ do
-    core-api ghi; các hàm ghi ``documents`` bên dưới chỉ còn cho delivery legacy.
+    core-api ghi.
     """
-
-    @abstractmethod
-    def upsert_document(
-        self,
-        document: Document,
-        metadata: dict[str, str],
-        status: IngestionStatus = IngestionStatus.QUEUED,
-    ) -> Result[None, Exception]:
-        """Insert/update document metadata.
-
-        Chỉ còn cho delivery legacy (gRPC/HTTP của packages-ai, compose profile
-        "legacy"); worker không gọi — documents do core-api ghi.
-        """
-        ...
-
-    @abstractmethod
-    def update_document_status(
-        self,
-        document_id: str,
-        status: IngestionStatus,
-        error_msg: str | None = None,
-    ) -> Result[None, Exception]:
-        """Update status document theo state machine.
-
-        Chỉ còn cho delivery legacy; worker báo trạng thái qua kết quả
-        DOCUMENT_PROCESSING_RESULT để core-api ghi.
-        """
-        ...
 
     @abstractmethod
     def upsert_chunks(
@@ -386,15 +358,6 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def delete(self, document_id: str) -> Result[None, Exception]:
-        """Xóa document metadata/chunks và append cleanup outbox event trong cùng transaction.
-
-        Chỉ còn cho delivery legacy; xoá thật do core-api làm, worker dọn dữ liệu
-        dẫn xuất khi nhận DOCUMENT_DELETED (``soft_delete_document_chunks``).
-        """
-        ...
-
-    @abstractmethod
     def get_document_status(
         self, document_id: str
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
@@ -476,21 +439,6 @@ class IMetadataStore(ABC):
     def get_document_placement(
         self, document_id: str
     ) -> Result["StoredDocumentPlacement | None", Exception]:
-        ...
-
-    @abstractmethod
-    def set_document_chapter(
-        self,
-        document_id: str,
-        chapter_code: str,
-        provenance: str,
-        confidence: float,
-        reason: str,
-    ) -> Result[bool, Exception]:
-        """Ghi chương do hệ thống xác định; không bao giờ đè chương giảng viên đã chọn.
-
-        Chỉ còn cho delivery legacy; worker báo chương qua PublishingDocumentChapterReporter.
-        """
         ...
 
     @abstractmethod

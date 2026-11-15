@@ -148,65 +148,6 @@ class TestPostgresMetadataStore:
         assert "FROM chunks" in cursor.execute_calls[0][0]
         assert "chunk_contents" not in cursor.execute_calls[0][0]
 
-    def test_update_document_status_returns_stale_when_rowcount_zero(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.rowcount = 0  # document missing hoặc soft-deleted
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.update_document_status("doc-001", IngestionStatus.PARSING)
-
-        assert result.is_err()
-        from document_chunk.domain.exceptions import DocumentStaleError
-
-        assert isinstance(result.error, DocumentStaleError)
-        assert connection.commit_calls == 0
-
-    def test_update_document_status_never_resurrects_deleted_documents(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.update_document_status("doc-001", IngestionStatus.ERROR, error_msg="boom")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        query = cursor.execute_calls[0][0]
-        # Status update must not clear deleted_at (would resurrect soft-deleted docs)
-        # and must only touch non-deleted rows.
-        assert "deleted_at = NULL" not in query
-        assert "AND deleted_at IS NULL" in query
-
-    def test_delete_uses_canonical_document_deleted_event(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.delete("doc-001")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        event_insert_params = cursor.execute_calls[1][1]
-        assert event_insert_params[1] == OutboxEventType.DOCUMENT_DELETED.value
-
 def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
     store = PostgresMetadataStore(SqlConfig(enabled=True))
     cursor = _FakeCursor()

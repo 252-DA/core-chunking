@@ -29,22 +29,6 @@ class NoopMetadataStore(IMetadataStore):
     Dùng khi SQL chưa bật để không làm vỡ pipeline hiện tại.
     """
 
-    def upsert_document(
-        self,
-        document: Document,
-        metadata: dict[str, str],
-        status: IngestionStatus = IngestionStatus.QUEUED,
-    ) -> Result[None, Exception]:
-        return Ok(None)
-
-    def update_document_status(
-        self,
-        document_id: str,
-        status: IngestionStatus,
-        error_msg: str | None = None,
-    ) -> Result[None, Exception]:
-        return Ok(None)
-
     def upsert_chunks(self, chunks: list[StoredChunkMetadata]) -> Result[None, Exception]:
         return Ok(None)
 
@@ -115,9 +99,6 @@ class NoopMetadataStore(IMetadataStore):
     ) -> Result[list[Document], Exception]:
         return Ok([])
 
-    def delete(self, document_id: str) -> Result[None, Exception]:
-        return Ok(None)
-
     def get_document_status(
         self, document_id: str
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
@@ -164,9 +145,6 @@ class NoopMetadataStore(IMetadataStore):
 
     def get_document_placement(self, document_id: str):
         return Ok(None)
-
-    def set_document_chapter(self, document_id, chapter_code, provenance, confidence, reason):
-        return Ok(False)
 
     def delete_inferred_chunk_lo_mappings(self, document_id: str):
         return Ok(0)

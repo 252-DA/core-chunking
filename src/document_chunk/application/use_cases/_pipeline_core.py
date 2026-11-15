@@ -1,14 +1,13 @@
 """
 PipelineCore — shared parse → chunk → embed → upsert + outbox append.
 
-Used by both ProcessDocumentUseCase (gRPC sync path) and RunPipelineUseCase (async worker path).
+Used by RunPipelineUseCase (async worker path).
 Callers are responsible for:
   - Document entity creation
-  - MinIO upload (or skipping it for the worker path)
+  - MinIO download to a local temporary file
   - QUEUED status initialisation
   - ACTIVE_REQUESTS gauge management
-  - choosing how status transitions are reported (``status_reporter``): the
-    worker publishes them to core-api; the legacy gRPC path writes them directly
+  - providing ``status_reporter`` to report status transitions back to core-api
 """
 import time
 from dataclasses import dataclass
@@ -22,10 +21,7 @@ from document_chunk.domain.exceptions import (
 )
 from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.chunker import IChunker
-from document_chunk.domain.ports.document_reporter import (
-    IDocumentStatusReporter,
-    MetadataStoreDocumentReporter,
-)
+from document_chunk.domain.ports.document_reporter import IDocumentStatusReporter
 from document_chunk.domain.ports.embedder import IEmbedder
 from document_chunk.domain.ports.graph_store import GraphChunk
 from document_chunk.domain.ports.metadata_store import (
@@ -90,12 +86,11 @@ class PipelineCore:
         Run the full ingestion pipeline for an already-created Document entity.
 
         file_path is taken from document.path.
-        Reports document status at each stage via ``status_reporter``; without
-        one (legacy gRPC path) the status is written through metadata_store.
+        Reports document status at each stage via ``status_reporter``.
         """
-        # Worker truyền reporter gửi kết quả về core-api; documents là bảng của
-        # core-api nên worker không ghi thẳng nữa.
-        reporter = status_reporter or MetadataStoreDocumentReporter(self._metadata_store)
+        if status_reporter is None:
+            raise ValueError("status_reporter is required")
+        reporter = status_reporter
         document_id = document.id
         doc_type = document.doc_type
         file_path = document.path

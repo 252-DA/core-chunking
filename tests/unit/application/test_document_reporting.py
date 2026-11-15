@@ -1,7 +1,6 @@
 """
 documents là bảng của core-api: PipelineCore và MapChunksToLosUseCase báo trạng
-thái/chương qua port (worker cài bằng kết quả gửi core-api); chỉ khi không được
-truyền port (delivery gRPC/HTTP cũ) mới ghi thẳng qua metadata store.
+thái/chương qua port (worker cài bằng kết quả gửi core-api).
 """
 from contextlib import contextmanager
 from unittest.mock import MagicMock
@@ -20,7 +19,6 @@ from document_chunk.domain.ports.chapter_matcher import ChapterMatch
 from document_chunk.domain.ports.document_reporter import (
     IDocumentChapterReporter,
     IDocumentStatusReporter,
-    MetadataStoreDocumentReporter,
 )
 from document_chunk.domain.ports.job_queue import DocumentJobPayload, EnrichmentJobPayload
 from document_chunk.domain.ports.metadata_store import (
@@ -131,21 +129,6 @@ class TestPipelineCoreStatusReporter:
 
         assert result.error is failure
 
-    def test_legacy_callers_without_reporter_still_write_through_the_store(
-        self, sample_document, mock_parser, mock_chunker, mock_embedder,
-        mock_vector_store, mock_metadata_store,
-    ):
-        result = _pipeline(
-            mock_parser, mock_chunker, mock_embedder, mock_vector_store, mock_metadata_store
-        ).run(document=sample_document, metadata={})
-
-        assert result.is_ok()
-        statuses = [
-            call.kwargs["status"]
-            for call in mock_metadata_store.update_document_status.call_args_list
-        ]
-        assert statuses[-1] == IngestionStatus.INDEXED
-
 
 def _map_use_case(store, reporter):
     matcher = MagicMock()
@@ -255,35 +238,13 @@ class TestMapChunksChapterReporter:
 
         assert reporter.calls == []
 
-    def test_without_reporter_the_legacy_store_write_is_used(self, map_store):
-        map_store.set_document_chapter.return_value = Ok(True)
+    def test_without_reporter_skips_reporting_without_writing_documents(self, map_store):
         use_case = _map_use_case(map_store, None)
 
         result = use_case.execute(MapChunksToLosRequest(document_id="d", course_id="c"))
 
         assert result.is_ok()
-        map_store.set_document_chapter.assert_called_once()
-
-
-class TestMetadataStoreDocumentReporter:
-    def test_status_delegates_to_the_store(self):
-        store = MagicMock()
-        store.update_document_status.return_value = Ok(None)
-
-        MetadataStoreDocumentReporter(store).report_status("d", IngestionStatus.ERROR, "boom")
-
-        store.update_document_status.assert_called_once_with(
-            document_id="d", status=IngestionStatus.ERROR, error_msg="boom"
-        )
-
-    def test_chapter_write_failure_does_not_block_mapping(self):
-        """Hành vi cũ của MapChunksToLos: kết quả set_document_chapter bị bỏ qua."""
-        store = MagicMock()
-        store.set_document_chapter.return_value = Err(RuntimeError("db down"))
-
-        result = MetadataStoreDocumentReporter(store).report_chapter("d", "1", "content", 0.9, "r")
-
-        assert result.is_ok()
+        map_store.set_document_chapter.assert_not_called()
 
 
 class TestJobPayloadGeneration:

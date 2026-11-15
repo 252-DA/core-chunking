@@ -11,8 +11,6 @@ from document_chunk.infrastructure.config import (
     ChunkerConfig,
     EmbedderConfig,
     get_settings,
-    GrpcConfig,
-    HttpConfig,
     LlamaIndexChunkerConfig,
     LlmConfig,
     MetricsConfig,
@@ -40,21 +38,6 @@ class TestAppConfig:
             cfg = AppConfig()
             assert cfg.env == "production"
             assert cfg.debug is True
-
-
-class TestGrpcConfig:
-    def test_defaults(self):
-        cfg = GrpcConfig()
-        assert cfg.host == "0.0.0.0"
-        assert cfg.port == 50051
-        assert cfg.max_workers == 10
-
-
-class TestHttpConfig:
-    def test_defaults(self):
-        cfg = HttpConfig()
-        assert cfg.host == "0.0.0.0"
-        assert cfg.port == 8000
 
 
 class TestQdrantConfig:
@@ -197,8 +180,7 @@ class TestSettings:
     def test_all_sub_configs_present(self):
         settings = Settings()
         assert settings.app is not None
-        assert settings.grpc is not None
-        assert settings.http is not None
+        assert settings.mcp is not None
         assert settings.qdrant is not None
         assert settings.minio is not None
         assert settings.sql is not None

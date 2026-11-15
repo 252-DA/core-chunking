@@ -1,32 +1,29 @@
-# Document Chunking Pipeline
+# Document Chunking Pipeline (`document-chunk`)
 
-A Python service for processing documents (PDF, DOCX, PPTX) into semantic chunks with vector embeddings, designed for RAG (Retrieval-Augmented Generation) systems.
+A Python library for processing documents (PDF, DOCX, PPTX) into semantic chunks with vector embeddings, designed for RAG (Retrieval-Augmented Generation) systems and consumed by `worker` and `mcp-service`.
 
-Built on **Hexagonal Architecture (Ports & Adapters)** — clean separation between domain logic, adapters, and delivery.
+Built on **Hexagonal Architecture (Ports & Adapters)** — clean separation between domain logic and infrastructure adapters.
 
 ## Architecture
 
 ```
-src/
+src/document_chunk/
 ├── domain/                  # Core — không phụ thuộc gì từ ngoài
 │   ├── entities/            # Document, Chunk, Embedding, Search
 │   └── ports/               # Interfaces: IParser, IChunker, IEmbedder, IVectorStore, ...
 ├── application/             # Use cases + DTOs
-│   ├── use_cases/           # ProcessDocument, SearchChunks
+│   ├── use_cases/           # PipelineCore, SearchChunks, MapChunksToLos, CourseTools, ...
 │   └── dto/                 # Request/Response contracts
 ├── adapters/                # Implementations của ports
-│   ├── parsers/             # PDF, DOCX, PPTX
-│   ├── preprocessors/       # OCR
-│   ├── chunkers/            # HeadingChunker
-│   ├── embedders/           # BGE-M3, OpenAI
+│   ├── parsers/             # PDF (PyMuPDF, Docling), DOCX, PPTX, Markdown
+│   ├── chunkers/            # HeadingChunker, StructuralChunker, LlamaIndexChunker
+│   ├── embedders/           # BGE-M3 (local / gRPC), OpenAI
 │   ├── storage/             # MinIO
-│   └── vector_db/           # Qdrant
-├── delivery/                # Entry points
-│   ├── grpc/                # gRPC server
-│   ├── mcp/                 # MCP learning-context server
-│   └── lib/                 # Library API
+│   ├── vector_db/           # Qdrant
+│   ├── graph_db/            # Neo4j
+│   └── metadata/            # Postgres repositories
 ├── shared/                  # Logger, Tracing, Metrics, Result type
-└── infrastructure/          # DI container, Config
+└── infrastructure/          # Config
 ```
 
 ### Data Flow
@@ -57,7 +54,7 @@ File Input
 | OpenAI text-embedding-3-small | 1536 | Multilingual |
 | OpenAI text-embedding-3-large | 3072 | Multilingual |
 
-## Installation
+## Installation & Testing
 
 Yêu cầu [uv](https://docs.astral.sh/uv/).
 
@@ -68,32 +65,11 @@ cd packages-ai
 # Install dependencies (tự tạo .venv)
 uv sync
 
-# Run
-uv run python -m document_chunk.delivery.grpc.server
+# Run unit tests
+uv run pytest tests/unit
 ```
 
-## MCP learning-context server
-
-MCP is the model-facing retrieval boundary. It exposes bounded,
-source-addressable context; it does not replace the internal gRPC API.
-
-```bash
-uv run python -m document_chunk.delivery.mcp.server
-```
-
-The Streamable HTTP endpoint is `http://localhost:8001/mcp` and currently
-exposes:
-
-- `retrieve_quiz_context`: resolves a real course LO and returns only chunks
-  mapped to that LO, bounded by chunk count and total characters;
-- `search_course_chunks`: semantic course-scoped retrieval with source
-  metadata.
-
-In the root compose stack, run:
-
-```bash
-docker compose up --build mcp-server content-generation-worker
-```
+Runtime entry points (workers, MCP server, HTTP/gRPC APIs) nằm ở các service ngoài dùng library này (`worker`, `mcp-service`, `core-api`).
 
 ## Observability
 
@@ -114,20 +90,18 @@ cp .env.example .env
 # Chỉnh sửa .env
 ```
 
-Xem [src/infrastructure/config.py](src/infrastructure/config.py) để biết toàn bộ options.
+Xem [src/document_chunk/infrastructure/config.py](src/document_chunk/infrastructure/config.py) để biết toàn bộ options.
 
 ## Roadmap
 
 - [x] Domain entities + ports
 - [x] Observability (logs, traces, metrics)
-- [ ] PDF, DOCX, PPTX parsers
-- [ ] Heading-based chunker
-- [ ] BGE-M3 embedder
-- [ ] Qdrant adapter
-- [ ] MinIO adapter
-- [ ] gRPC delivery
-- [x] MCP learning-context delivery
-- [ ] Neo4j metadata store (Phase 2)
+- [x] PDF, DOCX, PPTX, Markdown parsers
+- [x] Heading / Structural chunkers
+- [x] BGE-M3 (local + gRPC) & OpenAI embedders
+- [x] Qdrant adapter
+- [x] MinIO adapter
+- [x] Neo4j graph adapter
 - [ ] Hybrid search — dense + sparse (Phase 2)
 
 ## License
