@@ -37,6 +37,7 @@ class MinioAdapter(IFileStorage):
             access_key=self._config.access_key,
             secret_key=self._config.secret_key,
             secure=self._config.secure,
+            region=self._config.region or None,
         )
         logger.info(
             "minio.connected",
@@ -133,10 +134,18 @@ class MinioAdapter(IFileStorage):
     # ------------------------------------------------------------------
 
     def _ensure_bucket(self, client: Minio) -> None:
-        """Tạo bucket nếu chưa tồn tại."""
+        """Tạo bucket nếu chưa tồn tại.
+
+        Không raise: token R2 gắn một bucket không có quyền tạo bucket (bucket
+        được tạo sẵn trên dashboard). Lỗi thật như sai endpoint hay sai key vẫn
+        hiện ra ở lần upload/download đầu tiên, trong Result của chính thao tác đó.
+        """
         name = self._config.bucket_name
-        if not client.bucket_exists(name):
-            client.make_bucket(name)
-            logger.info("minio.bucket.created", name=name)
-        else:
-            logger.info("minio.bucket.exists", name=name)
+        try:
+            if not client.bucket_exists(name):
+                client.make_bucket(name)
+                logger.info("minio.bucket.created", name=name)
+            else:
+                logger.info("minio.bucket.exists", name=name)
+        except Exception as e:
+            logger.warning("minio.bucket.check_failed", name=name, error=str(e))

@@ -60,6 +60,9 @@ class MinioConfig(BaseSettings):
     secret_key: str = "minioadmin"
     bucket_name: str = "documents"
     secure: bool = False  # True nếu dùng HTTPS
+    # "auto" cho Cloudflare R2. Để trống thì minio-py tự dò region của bucket
+    # bằng một request riêng, R2 có thể không trả lời được request đó.
+    region: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="MINIO_")
 

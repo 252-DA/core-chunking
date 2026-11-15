@@ -72,6 +72,12 @@ class TestMinioConfig:
         assert cfg.endpoint == "localhost:9000"
         assert cfg.access_key == "minioadmin"
         assert cfg.bucket_name == "documents"
+        assert cfg.region is None
+
+    def test_region_env_override(self):
+        # R2 dùng region "auto"; MinioAdapter chuyển nó thẳng vào Minio(region=...).
+        with mock.patch.dict(os.environ, {"MINIO_REGION": "auto"}):
+            assert MinioConfig().region == "auto"
 
 
 class TestSqlConfig:
