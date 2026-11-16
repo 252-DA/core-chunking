@@ -123,24 +123,6 @@ class StoredQuizItem:
 
 
 @dataclass(frozen=True)
-class StoredAnswerForGrading:
-    """
-    Một câu trả lời tự luận chờ chấm, kèm đề và đáp án mẫu lúc người học nộp
-    (``quiz_attempts.grading_input``). Ba trường đề là None khi bài nộp không
-    lưu đề: không chấm bằng AI được.
-    """
-
-    attempt_id: str
-    quiz_id: str
-    course_id: str
-    question_type: str | None
-    question: str | None
-    correct_answer: Any
-    chosen_answer: Any
-    grading_status: str
-
-
-@dataclass(frozen=True)
 class StoredCourse:
     course_id: str
     code: str
@@ -210,61 +192,6 @@ class StoredChapterLOLink:
 
 
 @dataclass(frozen=True)
-class StoredLOAssessmentLink:
-    """
-    Cạnh LO ↔ hoạt động đánh giá.
-
-    ``scope="course"`` là phát biểu chung ở mục 5.3; ``scope="session"`` là cạnh
-    do một hàng cụ thể của mục 6 khẳng định (``session_order`` là thứ tự hàng).
-    """
-    lo_id: str
-    assessment_id: str
-    session_order: int = 0
-    scope: str = "course"
-    chapter_id: str | None = None
-    provenance: str = "extracted"
-    source_section: str | None = None
-    source_page: int | None = None
-
-
-@dataclass(frozen=True)
-class StoredCourseGoal:
-    """Mục tiêu học phần (mục 4.1) — tách khỏi chuẩn đầu ra (mục 4.2)."""
-    course_id: str
-    code: str
-    statement_vi: str
-    statement_en: str | None = None
-    source_section: str | None = None
-    source_page: int | None = None
-
-
-@dataclass(frozen=True)
-class StoredCourseSession:
-    """Một hàng của bảng mục 6 — một buổi học."""
-    course_id: str
-    order_index: int
-    title_vi: str
-    session_no: int | None = None
-    chapter_id: str | None = None
-    title_en: str | None = None
-    source_section: str | None = None
-    source_page: int | None = None
-
-
-@dataclass(frozen=True)
-class StoredExtractionIssue:
-    """Chỗ chưa chắc chắn khi trích đề cương — đầu vào màn hình kiểm tra."""
-    course_id: str
-    code: str
-    severity: str
-    message: str
-    document_id: str | None = None
-    source_section: str | None = None
-    source_page: int | None = None
-    source_locator: str | None = None
-
-
-@dataclass(frozen=True)
 class StoredChunkLOMapping:
     chunk_id: str
     lo_id: str
@@ -304,27 +231,12 @@ class IMetadataStore(ABC):
     """
     Port: SQL metadata + ingestion status + outbox events.
     SQL là source of truth, Qdrant/Neo4j là derived stores.
+
+    Ranh giới dữ liệu (docs/ke-hoach-ranh-gioi-du-lieu.md): worker chỉ ghi bảng AI
+    (chunks, chunk_lo_mappings, concepts, chunk_concepts, knowledge_relations,
+    llm_usage_logs) và sự kiện của chính nó vào outbox_events. Bảng nghiệp vụ do
+    core-api ghi.
     """
-
-    @abstractmethod
-    def upsert_document(
-        self,
-        document: Document,
-        metadata: dict[str, str],
-        status: IngestionStatus = IngestionStatus.QUEUED,
-    ) -> Result[None, Exception]:
-        """Insert/update document metadata."""
-        ...
-
-    @abstractmethod
-    def update_document_status(
-        self,
-        document_id: str,
-        status: IngestionStatus,
-        error_msg: str | None = None,
-    ) -> Result[None, Exception]:
-        """Update status document theo state machine."""
-        ...
 
     @abstractmethod
     def upsert_chunks(
@@ -343,6 +255,15 @@ class IMetadataStore(ABC):
         payload: dict,
     ) -> Result[str, Exception]:
         """Bulk upsert chunk metadata and append one outbox event in the same transaction."""
+        ...
+
+    @abstractmethod
+    def soft_delete_document_chunks(self, document_id: str) -> Result[int, Exception]:
+        """
+        Đặt ``chunks.deleted_at`` cho các chunk còn sống của một tài liệu đã bị
+        core-api soft-delete (xử lý DOCUMENT_DELETED). Idempotent; không đụng
+        ``documents``. Trả số chunk vừa ẩn.
+        """
         ...
 
     @abstractmethod
@@ -378,44 +299,20 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def persist_enrichment_batch(
+    def persist_concept_enrichment(
         self,
         document_id: str,
-        lesson_cards: list[StoredLessonCard],
-        quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
         outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
         """
-        Replace generated content for one document and optionally append one outbox event
-        in the same transaction. Returns the appended event_id, or None when no outbox
-        event is written.
-        """
-        ...
-
-    @abstractmethod
-    def persist_curriculum_quiz_items(
-        self,
-        lo_id: str,
-        bloom_level: str | int | None,
-        quiz_items: list[StoredQuizItem],
-    ) -> Result[None, Exception]:
-        """Append generated quiz drafts for one LO in a single transaction."""
-        ...
-
-    @abstractmethod
-    def persist_curriculum_lesson_cards(
-        self,
-        lo_id: str,
-        lesson_cards: list[StoredLessonCard],
-    ) -> Result[None, Exception]:
-        """
-        Append generated lesson-card drafts for one LO in a single transaction.
-
-        New cards go after the lesson's existing cards, in ``card_index`` order.
-        Re-persisting a card id only overwrites it while it is still a draft.
+        Phần dữ liệu AI của enrichment trong một transaction: thay chunk_concepts
+        của document, upsert concepts, và (nếu có) thay sự kiện outbox PENDING
+        cùng loại bằng sự kiện mới. Không đụng lesson_cards/quiz_items — học liệu
+        do core-api ghi (ENRICHMENT_CONTENT_RESULT). Trả event_id hoặc None;
+        Err(DocumentStaleError) khi document đã xoá.
         """
         ...
 
@@ -461,11 +358,6 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def delete(self, document_id: str) -> Result[None, Exception]:
-        """Xóa document metadata/chunks và append cleanup outbox event trong cùng transaction."""
-        ...
-
-    @abstractmethod
     def get_document_status(
         self, document_id: str
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
@@ -475,25 +367,18 @@ class IMetadataStore(ABC):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Curriculum methods
-    # ------------------------------------------------------------------
-
     @abstractmethod
-    def upsert_curriculum(
-        self,
-        course: "StoredCourse",
-        chapters: builtins.list[StoredChapter],
-        learning_outcomes: builtins.list[StoredLearningOutcome],
-        assessments: builtins.list[StoredAssessment],
-        lo_assessment_links: builtins.list[StoredLOAssessmentLink],
-        chapter_lo_links: builtins.list[StoredChapterLOLink] | None = None,
-        goals: builtins.list[StoredCourseGoal] | None = None,
-        sessions: builtins.list[StoredCourseSession] | None = None,
-        issues: builtins.list[StoredExtractionIssue] | None = None,
-    ) -> Result[None, Exception]:
-        """Insert/update toàn bộ curriculum cho một course trong một transaction."""
+    def get_document_processing_generation(
+        self, document_id: str
+    ) -> Result[int | None, Exception]:
+        """
+        ``documents.processing_generation`` hiện tại (core-api tăng mỗi lần đưa tài liệu
+        vào hàng đợi xử lý); None nếu tài liệu không có hoặc đã xoá. Chỉ đọc: worker dùng
+        để bỏ job của lượt cũ thay vì chạy song song với lượt mới.
+        """
         ...
+
+    # -- Đề cương (chỉ đọc: core-api ghi khi giảng viên áp dụng) --
 
     @abstractmethod
     def list_chapter_lo_links(
@@ -557,31 +442,8 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def set_document_chapter(
-        self,
-        document_id: str,
-        chapter_code: str,
-        provenance: str,
-        confidence: float,
-        reason: str,
-    ) -> Result[bool, Exception]:
-        """Ghi chương do hệ thống xác định; không bao giờ đè chương giảng viên đã chọn."""
-        ...
-
-    @abstractmethod
     def delete_inferred_chunk_lo_mappings(self, document_id: str) -> Result[int, Exception]:
         """Xoá cạnh chunk → LO do hệ thống suy ra của một tài liệu (giữ cạnh đã xác nhận)."""
-        ...
-
-    @abstractmethod
-    def update_content_generation_request(
-        self,
-        request_id: str,
-        status: str,
-        generated_count: int | None = None,
-        last_error: str | None = None,
-    ) -> Result[None, Exception]:
-        """Update lifecycle state for an asynchronous content-generation request."""
         ...
 
     @abstractmethod
@@ -604,58 +466,6 @@ class IMetadataStore(ABC):
         Append one row to llm_usage_logs for cost/latency observability.
         Best-effort: callers should treat a failure here as non-fatal to the
         use case that triggered the LLM call.
-        """
-        ...
-
-    # ------------------------------------------------------------------
-    # Answer grading (tự luận ngắn, worker chấm bằng LLM)
-    # ------------------------------------------------------------------
-
-    @abstractmethod
-    def list_answers_for_grading(
-        self,
-        attempt_ids: builtins.list[str],
-    ) -> Result[builtins.list[StoredAnswerForGrading], Exception]:
-        """Đọc các câu trả lời theo attempt_id, kèm đề và đáp án mẫu lúc nộp."""
-        ...
-
-    @abstractmethod
-    def save_answer_grade(
-        self,
-        *,
-        attempt_id: str,
-        score: float,
-        is_correct: bool,
-        feedback: str | None,
-    ) -> Result[bool, Exception]:
-        """
-        Ghi điểm (GRADED) cho một câu còn ở grading_status PENDING. Trả False
-        nếu câu đã được chấm (worker retry), để không chấm đè.
-        """
-        ...
-
-    @abstractmethod
-    def mark_answer_needs_review(
-        self,
-        *,
-        attempt_id: str,
-        feedback: str,
-    ) -> Result[bool, Exception]:
-        """
-        AI không chấm được câu PENDING: chuyển NEEDS_REVIEW để giảng viên chấm
-        tay, không ghi điểm. Trả False nếu câu không còn PENDING.
-        """
-        ...
-
-    @abstractmethod
-    def release_graded_attempts(
-        self,
-        attempt_ids: builtins.list[str],
-    ) -> Result[int, Exception]:
-        """
-        Chuyển cả lượt nộp từ ags_status AWAITING_GRADE sang PENDING khi mọi
-        câu đã GRADED (còn PENDING hay NEEDS_REVIEW thì giữ nguyên). Trả số
-        dòng đã chuyển.
         """
         ...
 

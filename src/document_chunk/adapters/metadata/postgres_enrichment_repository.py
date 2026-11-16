@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
 from document_chunk.adapters.metadata.postgres_repository_utils import (
     PostgresRepositoryBase,
-    stable_uuid,
 )
-from document_chunk.domain.exceptions import MetadataStoreError
+from document_chunk.domain.exceptions import DocumentStaleError, MetadataStoreError
 from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     StoredChunkConcept,
@@ -20,7 +18,11 @@ from document_chunk.shared.result import Err, Ok, Result
 
 
 class PostgresEnrichmentRepository(PostgresRepositoryBase):
-    """Generated lesson, quiz, and concept persistence operations."""
+    """Ghi concepts/chunk_concepts (bảng AI) và đọc học liệu đã sinh.
+
+    lessons/lesson_cards/quiz_items do core-api ghi (ENRICHMENT_CONTENT_RESULT);
+    ở đây chỉ còn hai hàm đọc ``list_lesson_cards`` / ``list_quiz_items``.
+    """
 
     def upsert_concepts(self, concepts: list[StoredConcept]) -> Result[None, Exception]:
         if not concepts:
@@ -51,33 +53,56 @@ class PostgresEnrichmentRepository(PostgresRepositoryBase):
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
-    def persist_enrichment_batch(
+    def persist_concept_enrichment(
         self,
         document_id: str,
-        lesson_cards: list[StoredLessonCard],
-        quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
         outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
+        """
+        Chỉ dữ liệu AI của enrichment (chunk_concepts, concepts) + sự kiện outbox
+        của worker, cùng một transaction. lesson_cards/quiz_items là bảng của
+        core-api, đi qua ENRICHMENT_CONTENT_RESULT.
+        """
         event_id: str | None = None
         if outbox_event_type is not None:
-            event_id = str(uuid.uuid4())
             if outbox_payload is None:
                 return Err(
                     MetadataStoreError(
                         "outbox_payload is required when outbox_event_type is provided"
                     )
                 )
+            event_id = str(uuid.uuid4())
 
         try:
             with self._connection() as conn:
                 with conn.cursor() as cur:
-                    self._replace_lesson_cards_cursor(cur, document_id, lesson_cards)
-                    self._replace_quiz_items_cursor(cur, document_id, quiz_items)
-                    self._replace_chunk_concepts_cursor(cur, document_id, chunk_concepts)
+                    # Delete-race guard như upsert_chunks_with_outbox: document đã
+                    # xoá thì không ghi dữ liệu dẫn xuất, không phát sự kiện chiếu graph.
+                    cur.execute(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1
+                            FROM documents
+                            WHERE document_id = %s::uuid
+                              AND deleted_at IS NULL
+                        );
+                        """,
+                        (document_id,),
+                    )
+                    row = cur.fetchone()
+                    if not (row and row[0]):
+                        return Err(
+                            DocumentStaleError(
+                                f"document {document_id} not found or deleted",
+                                document_id=document_id,
+                            )
+                        )
+                    # concepts trước: chunk_concepts.concept_id có FK tới concepts.
                     self._upsert_concepts_cursor(cur, concepts)
+                    self._replace_chunk_concepts_cursor(cur, document_id, chunk_concepts)
                     if (
                         event_id is not None
                         and outbox_event_type is not None
@@ -291,185 +316,3 @@ class PostgresEnrichmentRepository(PostgresRepositoryBase):
             (document_id,),
         )
         self._upsert_chunk_concepts_cursor(cur, chunk_concepts)
-
-    def _replace_lesson_cards_cursor(
-        self,
-        cur: Any,
-        document_id: str,
-        lesson_cards: "list[StoredLessonCard]",
-    ) -> None:
-        cur.execute(
-            """
-            UPDATE lesson_cards
-            SET deleted_at = NOW()
-            WHERE EXISTS (
-                SELECT 1
-                FROM chunks c
-                WHERE c.document_id = %s::uuid
-                  AND c.chunk_id = ANY(lesson_cards.source_chunk_ids)
-            )
-              AND status IN ('GENERATED_DRAFT','REVIEWING','CHANGES_REQUESTED');
-            """,
-            (document_id,),
-        )
-        if not lesson_cards:
-            return
-
-        cur.executemany(
-            """
-            WITH chunk_context AS (
-                SELECT c.course_id, clm.lo_id, lo.statement_vi
-                FROM chunks c
-                JOIN chunk_lo_mappings clm ON clm.chunk_id = c.chunk_id
-                JOIN learning_outcomes lo ON lo.lo_id = clm.lo_id
-                WHERE c.chunk_id = %s::uuid
-                  AND c.deleted_at IS NULL
-                ORDER BY clm.confidence DESC
-                LIMIT 1
-            ),
-            lesson_row AS (
-                INSERT INTO lessons (course_id, lo_id, title, status)
-                SELECT course_id, lo_id, COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
-                FROM chunk_context
-                ON CONFLICT (course_id, lo_id) DO UPDATE SET updated_at = NOW()
-                RETURNING lesson_id, course_id, lo_id
-            )
-            INSERT INTO lesson_cards (
-                card_id,
-                lesson_id,
-                course_id,
-                lo_id,
-                title,
-                content,
-                source_chunk_ids,
-                status,
-                deleted_at
-            )
-            SELECT %s::uuid, lesson_id, course_id, lo_id, %s, %s::jsonb, %s::uuid[], 'GENERATED_DRAFT', NULL
-            FROM lesson_row
-            ON CONFLICT (card_id) DO UPDATE SET
-                lesson_id = EXCLUDED.lesson_id,
-                course_id = EXCLUDED.course_id,
-                lo_id = EXCLUDED.lo_id,
-                title = EXCLUDED.title,
-                content = EXCLUDED.content,
-                source_chunk_ids = EXCLUDED.source_chunk_ids,
-                status = 'GENERATED_DRAFT',
-                updated_at = NOW(),
-                deleted_at = NULL;
-            """,
-            [
-                (
-                    card.primary_chunk_id,
-                    stable_uuid(card.card_id),
-                    card.title,
-                    json.dumps(
-                        {
-                            "key_insight": card.key_insight,
-                            "bullets": list(card.bullets),
-                            "heading_path": list(card.heading_path),
-                            "model_id": card.model_id,
-                            "card_index": card.card_index,
-                        }
-                    ),
-                    [
-                        stable_uuid(chunk_id)
-                        for chunk_id in (card.source_chunk_ids or (card.primary_chunk_id,))
-                    ],
-                )
-                for card in lesson_cards
-            ],
-        )
-
-    def _replace_quiz_items_cursor(
-        self,
-        cur: Any,
-        document_id: str,
-        quiz_items: "list[StoredQuizItem]",
-    ) -> None:
-        cur.execute(
-            """
-            UPDATE quiz_items
-            SET deleted_at = NOW()
-            WHERE EXISTS (
-                SELECT 1
-                FROM chunks c
-                WHERE c.document_id = %s::uuid
-                  AND c.chunk_id = ANY(quiz_items.source_chunk_ids)
-            )
-              AND status IN ('GENERATED_DRAFT','REVIEWING','CHANGES_REQUESTED');
-            """,
-            (document_id,),
-        )
-        if not quiz_items:
-            return
-
-        cur.executemany(
-            """
-            WITH chunk_context AS (
-                SELECT c.course_id, clm.lo_id, lo.statement_vi
-                FROM chunks c
-                JOIN chunk_lo_mappings clm ON clm.chunk_id = c.chunk_id
-                JOIN learning_outcomes lo ON lo.lo_id = clm.lo_id
-                WHERE c.chunk_id = %s::uuid
-                  AND c.deleted_at IS NULL
-                ORDER BY clm.confidence DESC
-                LIMIT 1
-            ),
-            lesson_row AS (
-                INSERT INTO lessons (course_id, lo_id, title, status)
-                SELECT course_id, lo_id, COALESCE(statement_vi, 'Generated lesson'), 'DRAFT'
-                FROM chunk_context
-                ON CONFLICT (course_id, lo_id) DO UPDATE SET updated_at = NOW()
-                RETURNING lesson_id, course_id, lo_id
-            )
-            INSERT INTO quiz_items (
-                quiz_id,
-                lesson_id,
-                course_id,
-                lo_id,
-                type,
-                question,
-                options,
-                correct_answer,
-                explanation,
-                source_chunk_ids,
-                status,
-                deleted_at
-            )
-            SELECT %s::uuid, lesson_id, course_id, lo_id, 'MCQ_SINGLE', %s, %s::jsonb, %s::jsonb,
-                   %s, %s::uuid[], 'GENERATED_DRAFT', NULL
-            FROM lesson_row
-            ON CONFLICT (quiz_id) DO UPDATE SET
-                lesson_id = EXCLUDED.lesson_id,
-                course_id = EXCLUDED.course_id,
-                lo_id = EXCLUDED.lo_id,
-                question = EXCLUDED.question,
-                options = EXCLUDED.options,
-                correct_answer = EXCLUDED.correct_answer,
-                explanation = EXCLUDED.explanation,
-                source_chunk_ids = EXCLUDED.source_chunk_ids,
-                status = 'GENERATED_DRAFT',
-                updated_at = NOW(),
-                deleted_at = NULL;
-            """,
-            [
-                (
-                    item.primary_chunk_id,
-                    stable_uuid(item.question_id),
-                    item.question,
-                    json.dumps(list(item.choices)),
-                    json.dumps(
-                        item.choices[item.correct_index]
-                        if 0 <= item.correct_index < len(item.choices)
-                        else None
-                    ),
-                    item.explanation,
-                    [
-                        stable_uuid(chunk_id)
-                        for chunk_id in (item.source_chunk_ids or (item.primary_chunk_id,))
-                    ],
-                )
-                for item in quiz_items
-            ],
-        )

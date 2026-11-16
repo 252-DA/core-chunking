@@ -6,42 +6,6 @@ from document_chunk.shared.result import Result
 
 
 @dataclass(frozen=True)
-class GraphLO:
-    lo_id: str
-    code: str
-    parent_code: str | None
-    statement_vi: str
-    statement_en: str | None = None
-    bloom_level: str | None = None
-    cdio_level: int | None = None
-
-
-@dataclass(frozen=True)
-class GraphChapter:
-    chapter_id: str
-    code: str
-    title: str
-    order_index: int = 0
-
-
-@dataclass(frozen=True)
-class GraphAssessment:
-    assessment_id: str
-    code: str
-    name_vi: str
-    category: str = "quiz"
-    weight: float | None = None
-
-
-@dataclass(frozen=True)
-class GraphChapterLOEdge:
-    """Cạnh chương → LO. Nhiều–nhiều: một LO được dạy qua nhiều chương."""
-    chapter_id: str
-    lo_id: str
-    provenance: str = "extracted"
-
-
-@dataclass(frozen=True)
 class GraphChunkLOEdge:
     chunk_id: str
     lo_id: str
@@ -111,21 +75,6 @@ class IGraphStore(ABC):
 
     @abstractmethod
     def delete_document(self, document_id: str) -> Result[None, Exception]:
-        ...
-
-    @abstractmethod
-    def upsert_curriculum_graph(
-        self,
-        course_id: str,
-        course_code: str,
-        course_title_vi: str,
-        chapters: "list[GraphChapter]",
-        los: "list[GraphLO]",
-        assessments: "list[GraphAssessment]",
-        lo_assessment_links: "list[tuple[str, str]]",
-        chapter_lo_links: "list[GraphChapterLOEdge] | None" = None,
-    ) -> Result[None, Exception]:
-        """Upsert Course/Chapter/LO/Assessment nodes + edges vào Neo4j."""
         ...
 
     @abstractmethod

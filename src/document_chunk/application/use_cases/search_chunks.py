@@ -8,6 +8,8 @@ import time
 
 from document_chunk.application.dto.search_dto import SearchRequest, SearchResponse, SearchResultItem
 from document_chunk.domain.entities.search import SearchFilter
+from document_chunk.domain.exceptions import ProcessingError
+from document_chunk.domain.ports.course_knowledge_store import ICourseKnowledgeStore
 from document_chunk.domain.ports.embedder import IEmbedder
 from document_chunk.domain.ports.vector_store import IVectorStore
 from document_chunk.shared.logger import get_logger
@@ -19,9 +21,16 @@ tracer = get_tracer(__name__)
 
 
 class SearchChunksUseCase:
-    def __init__(self, embedder: IEmbedder, vector_store: IVectorStore) -> None:
+    def __init__(
+        self,
+        embedder: IEmbedder,
+        vector_store: IVectorStore,
+        knowledge_store: ICourseKnowledgeStore | None = None,
+    ) -> None:
         self._embedder = embedder
         self._vector_store = vector_store
+        # Chỉ cần khi request.exclude_hidden: tra id tài liệu bị ẩn/đã xoá ở Postgres.
+        self._knowledge_store = knowledge_store
 
     def execute(self, request: SearchRequest) -> Result[SearchResponse, Exception]:
         started_at = time.perf_counter()
@@ -31,6 +40,23 @@ class SearchChunksUseCase:
             span.set_attribute("top_k", request.top_k)
 
             logger.info("search.started", query=request.query, top_k=request.top_k)
+
+            # 0. Tài liệu bị ẩn ở LMS hoặc đã xoá. Payload Qdrant không giữ lms_published
+            #    (và nó có thể đổi sau khi index) và vector của tài liệu xoá được dọn bất
+            #    đồng bộ nên luôn tra Postgres; lỗi thì từ chối, không rò.
+            hidden_ids: tuple[str, ...] = ()
+            if request.exclude_hidden:
+                if self._knowledge_store is None:
+                    return Err(
+                        ProcessingError("exclude_hidden needs a knowledge store")
+                    )
+                hidden_result = self._knowledge_store.list_hidden_document_ids(
+                    request.course_id
+                )
+                if hidden_result.is_err():
+                    logger.error("search.hidden_lookup_failed", error=str(hidden_result.error))
+                    return Err(hidden_result.error)
+                hidden_ids = tuple(hidden_result.unwrap())
 
             # 1. Embed query
             with tracer.start_as_current_span("embed_query"):
@@ -48,6 +74,7 @@ class SearchChunksUseCase:
                 language=request.language,
                 course_id=request.course_id,
                 owner_id=request.owner_id,
+                exclude_document_ids=hidden_ids,
             )
 
             # 3. Search vector store
@@ -105,6 +132,7 @@ class SearchChunksUseCase:
             or filters.language
             or filters.course_id
             or filters.owner_id
+            or filters.exclude_document_ids
             or filters.uploaded_after
             or filters.uploaded_before
         )

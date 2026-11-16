@@ -5,11 +5,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, TypedDict, cast
 
-from document_chunk.adapters.metadata.postgres_answer_grading_repository import (
-    PostgresAnswerGradingRepository,
-)
 from document_chunk.adapters.metadata.postgres_chunk_repository import (
     PostgresChunkRepository,
+)
+from document_chunk.adapters.metadata.postgres_course_knowledge_repository import (
+    PostgresCourseKnowledgeRepository,
 )
 from document_chunk.adapters.metadata.postgres_curriculum_repository import (
     PostgresCurriculumRepository,
@@ -45,7 +45,7 @@ class PostgresMetadataStore(
     PostgresDocumentPlacementRepository,
     PostgresOutboxRepository,
     PostgresLlmUsageRepository,
-    PostgresAnswerGradingRepository,
+    PostgresCourseKnowledgeRepository,
     IMetadataStore,
 ):
     """PostgreSQL metadata facade composed from domain-focused repositories."""

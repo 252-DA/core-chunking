@@ -95,8 +95,6 @@ def mock_store() -> MagicMock:
         [StoredAssessment(assessment_id="CO3115:A.O.2", course_id="CO3115", code="A.O.2", name_vi="Kiểm tra giữa kỳ", category="midterm")],
     ))
     store.list_chunks_for_lo.return_value = Ok([_STORED_CHUNK])
-    store.persist_enrichment_batch.return_value = Ok(None)
-    store.persist_curriculum_quiz_items.return_value = Ok(None)
     store.list_los_by_chapter.return_value = Ok([_STORED_LO])
     store.list_los_by_assessment.return_value = Ok([_STORED_LO])
     return store
@@ -173,20 +171,18 @@ def test_no_curriculum_returns_error(use_case, mock_store):
     assert result.is_err()
 
 
-def test_persist_enrichment_called(use_case, mock_store):
+def test_generated_items_are_returned_not_persisted(use_case, mock_store):
     req = GenerateCurriculumQuizRequest(
         course_id="CO3115",
         target_kind="lo",
         target_code="L.O.3.1",
         count=2,
     )
-    # Đường sinh theo LO lưu qua persist_curriculum_quiz_items; trước đây test
-    # này khẳng định persist_enrichment_batch — một method use case không gọi.
+    # Worker tính, core-api ghi (docs/ke-hoach-ranh-gioi-du-lieu.md): use case
+    # trả câu về cho runner gửi đi, không gọi hàm ghi quiz_items nào.
     result = use_case.execute(req)
     assert result.is_ok(), str(result.error)
-    mock_store.persist_curriculum_quiz_items.assert_called_once()
-    quiz_items = mock_store.persist_curriculum_quiz_items.call_args.kwargs["quiz_items"]
-    assert len(quiz_items) >= 2
+    assert len(result.unwrap().items) >= 2
 
 
 def test_question_ids_returned(use_case):

@@ -19,11 +19,29 @@ class DocumentJobPayload:
     file_name: str
     language: str | None = None
     metadata: dict = field(default_factory=dict)
+    # Lượt xử lý do core-api cấp (documents.processing_generation) mỗi lần đưa
+    # tài liệu vào hàng đợi; worker gửi kèm mọi kết quả trạng thái để core-api
+    # bỏ kết quả của lượt cũ. 0 = job cũ chưa có trường này.
+    processing_generation: int = 0
+
+    def __post_init__(self) -> None:
+        _check_generation(self.processing_generation)
 
 
 @dataclass
 class EnrichmentJobPayload:
     document_id: str
+    # Chuyển tiếp từ job xử lý tài liệu đã sinh ra lần enrichment này.
+    processing_generation: int = 0
+
+    def __post_init__(self) -> None:
+        _check_generation(self.processing_generation)
+
+
+def _check_generation(value: object) -> None:
+    # Runner đổi ValueError thành UnrecoverableError: job sai dạng không retry.
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"processing_generation must be an integer >= 0, got {value!r}")
 
 
 class IJobQueue(ABC):

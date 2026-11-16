@@ -1,15 +1,6 @@
-from document_chunk.application.dto.document_dto import (
-    ChunkSummary,
-    ProcessDocumentRequest,
-    ProcessDocumentResponse,
-)
 from document_chunk.application.dto.generation_dto import (
-    CardSection,
-    CardsResponse,
-    DocumentStatusResponse,
-    LessonCardItem,
-    QuizQuestionItem,
-    QuizResponse,
+    GenerateCurriculumQuizRequest,
+    GenerateCurriculumQuizResponse,
 )
 from document_chunk.application.dto.search_dto import (
     SearchRequest,
@@ -18,15 +9,8 @@ from document_chunk.application.dto.search_dto import (
 )
 
 __all__ = [
-    "ProcessDocumentRequest",
-    "ProcessDocumentResponse",
-    "ChunkSummary",
-    "DocumentStatusResponse",
-    "LessonCardItem",
-    "CardSection",
-    "CardsResponse",
-    "QuizQuestionItem",
-    "QuizResponse",
+    "GenerateCurriculumQuizRequest",
+    "GenerateCurriculumQuizResponse",
     "SearchRequest",
     "SearchResponse",
     "SearchResultItem",

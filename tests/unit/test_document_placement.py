@@ -20,6 +20,7 @@ from document_chunk.domain.entities.curriculum import (
 )
 from document_chunk.domain.ports.chapter_matcher import ChapterMatch, ChapterProfile
 from document_chunk.domain.ports.chunk_lo_mapper import MappingHints
+from document_chunk.domain.ports.document_reporter import IDocumentChapterReporter
 from document_chunk.domain.ports.metadata_store import (
     StoredChapter,
     StoredChapterLOLink,
@@ -142,6 +143,15 @@ def test_reference_ignores_book_chapter_numbers():
 # MapChunksToLosUseCase — vị trí tài liệu
 # ---------------------------------------------------------------------------
 
+class _RecordingChapterReporter(IDocumentChapterReporter):
+    def __init__(self):
+        self.calls: list[tuple[str, str, str, float, str]] = []
+
+    def report_chapter(self, document_id, chapter_code, provenance, confidence, reason):
+        self.calls.append((document_id, chapter_code, provenance, confidence, reason))
+        return Ok(None)
+
+
 def build_use_case(placement, chunks, matcher=None):
     store = MagicMock()
     store.get_curriculum.return_value = Ok((
@@ -167,15 +177,19 @@ def build_use_case(placement, chunks, matcher=None):
     ])
     store.list_chunks.return_value = Ok(chunks)
     store.get_document_placement.return_value = Ok(placement)
-    store.set_document_chapter.return_value = Ok(True)
     store.delete_inferred_chunk_lo_mappings.return_value = Ok(3)
     store.upsert_chunk_lo_mappings.return_value = Ok(None)
     graph = MagicMock()
     graph.upsert_chunk_lo_mappings.return_value = Ok(None)
+    reporter = _RecordingChapterReporter()
     use_case = MapChunksToLosUseCase(
-        metadata_store=store, graph_store=graph, lo_mapper=HeuristicLoMapper(), chapter_matcher=matcher
+        metadata_store=store,
+        graph_store=graph,
+        lo_mapper=HeuristicLoMapper(),
+        chapter_matcher=matcher,
+        chapter_reporter=reporter,
     )
-    return use_case, store
+    return use_case, store, reporter
 
 
 def test_lecture_without_chapter_is_placed_by_content_and_recorded():
@@ -183,7 +197,7 @@ def test_lecture_without_chapter_is_placed_by_content_and_recorded():
     matcher.match.return_value = Ok([ChapterMatch(chapter_code="1", score=0.62, margin=0.11,
                                                   best_code="1", runner_up_code="2")])
     chunks = [chunk("a", 0, ["Introduction to Big Data"], "What's Big Data?")]
-    use_case, store = build_use_case(
+    use_case, store, reporter = build_use_case(
         StoredDocumentPlacement(document_id="doc", course_id=COURSE, role="lecture"), chunks, matcher
     )
 
@@ -194,8 +208,8 @@ def test_lecture_without_chapter_is_placed_by_content_and_recorded():
     assert "Min-hashing" in next(p.text for p in profiles if p.code == "2")
     # "Ôn tập" không gắn LO nào nên không tham gia khớp.
     assert [p.code for p in profiles] == ["1", "2"]
-    code, provenance, score, reason = store.set_document_chapter.call_args.args[1:]
-    assert (code, provenance, score) == ("1", "content", 0.62)
+    [(doc_id, code, provenance, score, reason)] = reporter.calls
+    assert (doc_id, code, provenance, score) == ("doc", "1", "content", 0.62)
     assert "chương 1" in reason
     [persisted] = store.upsert_chunk_lo_mappings.call_args.args[0]
     assert persisted.lo_id == "lo11"
@@ -203,7 +217,7 @@ def test_lecture_without_chapter_is_placed_by_content_and_recorded():
 
 def test_confirmed_chapter_is_used_without_matching():
     matcher = MagicMock()
-    use_case, store = build_use_case(
+    use_case, store, _ = build_use_case(
         StoredDocumentPlacement(document_id="doc", course_id=COURSE, role="lecture",
                                 chapter_code="2", chapter_provenance="confirmed"),
         [chunk("a", 0, ["Slides"])],
@@ -220,7 +234,7 @@ def test_confirmed_chapter_is_used_without_matching():
 def test_stale_mappings_are_cleared_even_when_nothing_maps():
     matcher = MagicMock()
     matcher.match.return_value = Ok([ChapterMatch(chapter_code=None, score=0.4, margin=0.01)])
-    use_case, store = build_use_case(
+    use_case, store, reporter = build_use_case(
         StoredDocumentPlacement(document_id="doc", course_id=COURSE, role="lecture"),
         [chunk("a", 0, ["Misc"])],
         matcher,
@@ -230,7 +244,7 @@ def test_stale_mappings_are_cleared_even_when_nothing_maps():
 
     assert result.mapping_count == 0
     store.delete_inferred_chunk_lo_mappings.assert_called_once_with("doc")
-    store.set_document_chapter.assert_not_called()
+    assert reporter.calls == []
     store.upsert_chunk_lo_mappings.assert_not_called()
 
 
@@ -245,7 +259,7 @@ def test_reference_is_matched_section_by_section_with_strict_thresholds():
         chunk("b", 1, ["Mining of Massive Datasets", "Finding Similar Items"], "minhash"),
         chunk("c", 2, ["Mining of Massive Datasets", "Clustering"], "k-means"),
     ]
-    use_case, store = build_use_case(
+    use_case, store, reporter = build_use_case(
         StoredDocumentPlacement(document_id="doc", course_id=COURSE, role="reference"), chunks, matcher
     )
 
@@ -256,7 +270,7 @@ def test_reference_is_matched_section_by_section_with_strict_thresholds():
     assert matcher.match.call_args.kwargs == {"strict": True}
     persisted = store.upsert_chunk_lo_mappings.call_args.args[0]
     assert {(m.chunk_id, m.lo_id) for m in persisted} == {("a", "lo23"), ("b", "lo23")}
-    store.set_document_chapter.assert_not_called()
+    assert reporter.calls == []
 
 
 def test_sections_fall_back_to_fixed_windows_without_headings():

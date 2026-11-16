@@ -1,12 +1,13 @@
 """
 PipelineCore — shared parse → chunk → embed → upsert + outbox append.
 
-Used by both ProcessDocumentUseCase (gRPC sync path) and RunPipelineUseCase (async worker path).
+Used by RunPipelineUseCase (async worker path).
 Callers are responsible for:
   - Document entity creation
-  - MinIO upload (or skipping it for the worker path)
+  - MinIO download to a local temporary file
   - QUEUED status initialisation
   - ACTIVE_REQUESTS gauge management
+  - providing ``status_reporter`` to report status transitions back to core-api
 """
 import time
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from document_chunk.domain.exceptions import (
 )
 from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.chunker import IChunker
+from document_chunk.domain.ports.document_reporter import IDocumentStatusReporter
 from document_chunk.domain.ports.embedder import IEmbedder
 from document_chunk.domain.ports.graph_store import GraphChunk
 from document_chunk.domain.ports.metadata_store import (
@@ -78,18 +80,23 @@ class PipelineCore:
         document: Document,
         metadata: dict,
         language: str | None = None,
+        status_reporter: IDocumentStatusReporter | None = None,
     ) -> Result[PipelineCoreResult, Exception]:
         """
         Run the full ingestion pipeline for an already-created Document entity.
 
         file_path is taken from document.path.
-        Updates document status at each stage via metadata_store.
+        Reports document status at each stage via ``status_reporter``.
         """
+        if status_reporter is None:
+            raise ValueError("status_reporter is required")
+        reporter = status_reporter
         document_id = document.id
         doc_type = document.doc_type
         file_path = document.path
         if file_path is None:
             return self._fail(
+                reporter,
                 document_id,
                 doc_type,
                 ProcessingError("PipelineCore requires document.path for local file access"),
@@ -99,9 +106,9 @@ class PipelineCore:
 
         try:
             # 1. Status → PARSING
-            r = self._metadata_store.update_document_status(document_id, IngestionStatus.PARSING)
+            r = reporter.report_status(document_id, IngestionStatus.PARSING)
             if r.is_err():
-                return self._fail(document_id, doc_type, r.error)
+                return self._fail(reporter, document_id, doc_type, r.error)
 
             # 2. Preprocessors (OCR, etc.) — applied sequentially
             try:
@@ -124,11 +131,11 @@ class PipelineCore:
             with tracer.start_as_current_span("parse"):
                 parser = self._resolve_parser(doc_type)
                 if parser is None:
-                    return self._fail(document_id, doc_type, UnsupportedFileTypeError(doc_type.value))
+                    return self._fail(reporter, document_id, doc_type, UnsupportedFileTypeError(doc_type.value))
                 parse_result = parser.parse(file_path)
                 if parse_result.is_err():
                     logger.error("pipeline.parse_failed", document_id=document_id, error=str(parse_result.error))
-                    return self._fail(document_id, doc_type, parse_result.error)
+                    return self._fail(reporter, document_id, doc_type, parse_result.error)
             PROCESSING_DURATION.labels(stage="parse", doc_type=doc_type.value).observe(
                 time.perf_counter() - _t
             )
@@ -163,9 +170,9 @@ class PipelineCore:
                 )
 
             # 4. Status → CHUNKING
-            r = self._metadata_store.update_document_status(document_id, IngestionStatus.CHUNKING)
+            r = reporter.report_status(document_id, IngestionStatus.CHUNKING)
             if r.is_err():
-                return self._fail(document_id, doc_type, r.error)
+                return self._fail(reporter, document_id, doc_type, r.error)
 
             # 5. Chunk
             _t = time.perf_counter()
@@ -173,7 +180,7 @@ class PipelineCore:
                 chunk_result = self._chunker.chunk(parsed_doc)
                 if chunk_result.is_err():
                     logger.error("pipeline.chunk_failed", document_id=document_id, error=str(chunk_result.error))
-                    return self._fail(document_id, doc_type, chunk_result.error)
+                    return self._fail(reporter, document_id, doc_type, chunk_result.error)
             PROCESSING_DURATION.labels(stage="chunk", doc_type=doc_type.value).observe(
                 time.perf_counter() - _t
             )
@@ -185,9 +192,9 @@ class PipelineCore:
             logger.debug("pipeline.chunked", document_id=document_id, chunks=len(chunks))
 
             # 6. Status → EMBEDDING
-            r = self._metadata_store.update_document_status(document_id, IngestionStatus.EMBEDDING)
+            r = reporter.report_status(document_id, IngestionStatus.EMBEDDING)
             if r.is_err():
-                return self._fail(document_id, doc_type, r.error)
+                return self._fail(reporter, document_id, doc_type, r.error)
 
             # 7. Embed
             _t = time.perf_counter()
@@ -195,7 +202,7 @@ class PipelineCore:
                 embed_result = self._embedder.embed_chunks(chunks)
                 if embed_result.is_err():
                     logger.error("pipeline.embed_failed", document_id=document_id, error=str(embed_result.error))
-                    return self._fail(document_id, doc_type, embed_result.error)
+                    return self._fail(reporter, document_id, doc_type, embed_result.error)
             PROCESSING_DURATION.labels(stage="embed", doc_type=doc_type.value).observe(
                 time.perf_counter() - _t
             )
@@ -208,7 +215,7 @@ class PipelineCore:
                 upsert_result = self._vector_store.upsert(chunks, embeddings)
                 if upsert_result.is_err():
                     logger.error("pipeline.upsert_failed", document_id=document_id, error=str(upsert_result.error))
-                    return self._fail(document_id, doc_type, upsert_result.error)
+                    return self._fail(reporter, document_id, doc_type, upsert_result.error)
             PROCESSING_DURATION.labels(stage="upsert", doc_type=doc_type.value).observe(
                 time.perf_counter() - _t
             )
@@ -240,21 +247,19 @@ class PipelineCore:
                 },
             )
             if outbox_result.is_err():
-                return self._fail(document_id, doc_type, outbox_result.error)
+                return self._fail(reporter, document_id, doc_type, outbox_result.error)
 
             # Cleanup after metadata commits: a failed metadata write keeps old vectors.
             # Retry uses the same structural IDs, so this can be repeated safely.
             if metadata_payload_replace:
                 cleanup = self._vector_store.delete_stale(document_id, [c.id for c in chunks])
                 if cleanup.is_err():
-                    return self._fail(document_id, doc_type, cleanup.error)
+                    return self._fail(reporter, document_id, doc_type, cleanup.error)
 
             # 12. Status → INDEXED. Content generation is a separate explicit request.
-            status_result = self._metadata_store.update_document_status(
-                document_id, IngestionStatus.INDEXED
-            )
+            status_result = reporter.report_status(document_id, IngestionStatus.INDEXED)
             if status_result.is_err():
-                return self._fail(document_id, doc_type, status_result.error)
+                return self._fail(reporter, document_id, doc_type, status_result.error)
 
             duration_ms = (time.perf_counter() - started_at) * 1000
             DOCUMENTS_PROCESSED.labels(status="success", doc_type=doc_type.value).inc()
@@ -263,7 +268,7 @@ class PipelineCore:
 
         except Exception as exc:
             logger.error("pipeline.unhandled_exception", document_id=document_id, error=str(exc))
-            return self._fail(document_id, doc_type, exc)
+            return self._fail(reporter, document_id, doc_type, exc)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -305,7 +310,11 @@ class PipelineCore:
         ]
 
     def _fail(
-        self, document_id: str, doc_type: DocumentType, error: Exception
+        self,
+        reporter: IDocumentStatusReporter,
+        document_id: str,
+        doc_type: DocumentType,
+        error: Exception,
     ) -> Result[PipelineCoreResult, Exception]:
         if isinstance(error, DocumentStaleError):
             # Document bị xóa giữa chừng — không ghi ERROR status (vô ích),
@@ -317,9 +326,6 @@ class PipelineCore:
             )
             return Err(error)
         DOCUMENTS_PROCESSED.labels(status="failed", doc_type=doc_type.value).inc()
-        self._metadata_store.update_document_status(
-            document_id=document_id,
-            status=IngestionStatus.ERROR,
-            error_msg=str(error),
-        )
+        # Best-effort: báo ERROR hỏng thì lỗi gốc vẫn được trả về, job retry.
+        reporter.report_status(document_id, IngestionStatus.ERROR, error_msg=str(error))
         return Err(error)

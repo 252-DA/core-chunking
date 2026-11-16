@@ -1,5 +1,6 @@
 """Structural v2: exact token budgets, heading ancestry, deterministic IDs."""
 
+from collections import Counter
 from dataclasses import replace
 import hashlib
 import json
@@ -36,6 +37,7 @@ class StructuralChunker(IChunker):
     def chunk(self, document):
         try:
             nodes, removed = build_nodes(document, self.counter, self.config)
+            split_pages = self.config.split_slides_by_page and document.is_slides
             drafts = []
             for node in nodes:
                 units = []
@@ -46,8 +48,8 @@ class StructuralChunker(IChunker):
                         for continuation in block_units[1:]:
                             continuation.block = replace(block, images=())
                     units.extend(block_units)
-                drafts.extend(pack(node, units, self.counter, self.config))
-            drafts, merges = consolidate(drafts, self.counter, self.config)
+                drafts.extend(pack(node, units, self.counter, self.config, split_pages))
+            drafts, merges = consolidate(drafts, self.counter, self.config, split_pages)
             chunks = []
             ancestors = {node.path: node for node in nodes}
             cfg = self.config
@@ -98,6 +100,10 @@ class StructuralChunker(IChunker):
                     [document.document.id, VERSION, i, path, digest], ensure_ascii=False
                 )
                 ancestor = ancestors.get(path, nodes[0])
+                page = main_page(units)
+                # Nhãn nguồn đi cùng trang được trích; breadcrumb nhúng và
+                # section_id vẫn theo tổ tiên chung của cả chunk.
+                label = cited_path(draft, page) or path
                 section_id = str(
                     uuid.uuid5(
                         NAMESPACE,
@@ -120,12 +126,12 @@ class StructuralChunker(IChunker):
                             document_name=document.document.name,
                             document_type=document.document.doc_type,
                             chunk_index=i,
-                            heading_path=path,
-                            heading_level=ancestor.level,
+                            heading_path=label,
+                            heading_level=ancestors.get(label, ancestor).level,
                             section_id=section_id,
-                            section_title=path[-1] if path else None,
-                            parent_section=path[-2] if len(path) > 1 else None,
-                            page_number=min(pages) if pages else None,
+                            section_title=label[-1] if label else None,
+                            parent_section=label[-2] if len(label) > 1 else None,
+                            page_number=page,
                             page_start=min(pages) if pages else None,
                             page_end=max(pages) if pages else None,
                             part_index=draft.part_index,
@@ -154,6 +160,37 @@ class StructuralChunker(IChunker):
         except Exception as exc:
             logger.error("structural.failed", error=str(exc))
             return Err(ChunkError("Structural chunking failed", cause=exc))
+
+
+def main_page(units):
+    """
+    Trang chứa nhiều chữ nhất của chunk; hòa thì lấy trang đầu.
+
+    Chunk gộp nhiều slide nhỏ thường mở đầu bằng slide tiêu đề hoặc slide ngăn
+    mục, còn nội dung trả lời nằm ở trang sau. Lấy trang đầu làm ``page_number``
+    thì trích dẫn trỏ sai trang (đo 111 câu, v2-slides: đúng trang 0,85 → 0,96).
+    ``page_start``/``page_end`` vẫn giữ toàn bộ khoảng trang.
+    """
+    weight = Counter()
+    for unit in units:
+        if unit.block.page is not None:
+            weight[unit.block.page] += len(unit.text)
+    if not weight:
+        return None
+    return min(weight, key=lambda page: (-weight[page], page))
+
+
+def cited_path(draft, page):
+    """Đường heading của phần chiếm nhiều chữ nhất trên trang được trích."""
+    weight = Counter()
+    for run in draft.runs:
+        for unit in run.units:
+            if unit.block.page == page:
+                weight[run.node.path] += len(unit.text)
+    if not weight:
+        return None
+    best = max(weight.values())
+    return next(path for path, size in weight.items() if size == best)
 
 
 def build_chunker(config, embedder_config=None):

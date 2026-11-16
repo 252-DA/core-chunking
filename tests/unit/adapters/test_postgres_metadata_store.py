@@ -1,4 +1,3 @@
-import json
 from contextlib import contextmanager
 from inspect import getsource
 
@@ -7,8 +6,6 @@ from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     IngestionStatus,
     StoredChunkMetadata,
-    StoredLessonCard,
-    StoredQuizItem,
 )
 from document_chunk.infrastructure.config import SqlConfig
 
@@ -117,68 +114,6 @@ class TestPostgresMetadataStore:
         assert "SELECT EXISTS" in cursor.execute_calls[0][0]
         assert "INSERT INTO outbox_events" in cursor.execute_calls[1][0]
 
-    def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(
-        self, monkeypatch
-    ):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.persist_enrichment_batch(
-            document_id="doc-001",
-            lesson_cards=[
-                StoredLessonCard(
-                    card_id="card-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001", "chunk-002"),
-                    heading_path=("Chapter 1", "Matrices"),
-                    title="Matrices",
-                    bullets=("Rectangular arrays",),
-                    key_insight="Matrices encode linear structure.",
-                    card_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-            quiz_items=[
-                StoredQuizItem(
-                    question_id="quiz-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001", "chunk-002"),
-                    heading_path=("Chapter 1", "Matrices"),
-                    question="What is a matrix?",
-                    choices=("A set", "A rectangular array", "A scalar", "A graph"),
-                    correct_index=1,
-                    explanation="That is the standard definition.",
-                    difficulty="easy",
-                    question_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-            concepts=[],
-            chunk_concepts=[],
-            outbox_event_type=OutboxEventType.CONCEPT_GRAPH_PROJECT,
-            outbox_payload={"document_id": "doc-001"},
-        )
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        execute_sql = "\n".join(query for query, _ in cursor.execute_calls)
-        executemany_sql = "\n".join(query for query, _ in cursor.executemany_calls)
-        assert "UPDATE lesson_cards" in execute_sql
-        assert "UPDATE quiz_items" in execute_sql
-        assert "DELETE FROM chunk_concepts" in execute_sql
-        assert "DELETE FROM outbox_events" in execute_sql
-        assert executemany_sql.count("INSERT INTO lesson_cards") == 1
-        assert executemany_sql.count("INSERT INTO quiz_items") == 1
-
     def test_list_chunks_reads_current_chunks_table(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
         cursor = _FakeCursor()
@@ -213,213 +148,6 @@ class TestPostgresMetadataStore:
         assert "FROM chunks" in cursor.execute_calls[0][0]
         assert "chunk_contents" not in cursor.execute_calls[0][0]
 
-    def test_update_document_status_returns_stale_when_rowcount_zero(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.rowcount = 0  # document missing hoặc soft-deleted
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.update_document_status("doc-001", IngestionStatus.PARSING)
-
-        assert result.is_err()
-        from document_chunk.domain.exceptions import DocumentStaleError
-
-        assert isinstance(result.error, DocumentStaleError)
-        assert connection.commit_calls == 0
-
-    def test_update_document_status_never_resurrects_deleted_documents(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.update_document_status("doc-001", IngestionStatus.ERROR, error_msg="boom")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        query = cursor.execute_calls[0][0]
-        # Status update must not clear deleted_at (would resurrect soft-deleted docs)
-        # and must only touch non-deleted rows.
-        assert "deleted_at = NULL" not in query
-        assert "AND deleted_at IS NULL" in query
-
-    def test_delete_uses_canonical_document_deleted_event(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.delete("doc-001")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        event_insert_params = cursor.execute_calls[1][1]
-        assert event_insert_params[1] == OutboxEventType.DOCUMENT_DELETED.value
-
-    def test_persist_curriculum_quiz_items_targets_lo_without_replacing_document(
-        self,
-        monkeypatch,
-    ):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.persist_curriculum_quiz_items(
-            lo_id="lo-001",
-            bloom_level="analyze",
-            quiz_items=[
-                StoredQuizItem(
-                    question_id="quiz-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001",),
-                    heading_path=("Chapter 1",),
-                    question="Which conclusion follows?",
-                    choices=("A", "B", "C", "D"),
-                    correct_index=2,
-                    explanation="C follows from the source.",
-                    difficulty="medium",
-                    question_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-        )
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        assert len(cursor.execute_calls) == 0
-        assert len(cursor.executemany_calls) == 1
-        query, rows = cursor.executemany_calls[0]
-        assert "INSERT INTO quiz_items" in query
-        assert "UPDATE quiz_items SET deleted_at" not in query
-        # (lo, lo, quiz_id, lo, type, question, options, correct, explanation, bloom, …)
-        assert rows[0][4] == "MCQ_SINGLE"
-        assert rows[0][9] == 4
-
-    def test_persist_curriculum_quiz_items_writes_type_and_typed_answer(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-        result = store.persist_curriculum_quiz_items(
-            lo_id="00000000-0000-0000-0000-000000000001",
-            bloom_level=3,
-            quiz_items=[
-                StoredQuizItem(
-                    question_id="00000000-0000-0000-0000-000000000002",
-                    document_id="doc",
-                    primary_chunk_id="00000000-0000-0000-0000-000000000003",
-                    question="Cây n đỉnh có ____ cạnh.",
-                    question_type="FILL_BLANK",
-                    correct_answer=["n-1", "n − 1"],
-                )
-            ],
-        )
-
-        assert result.is_ok()
-        _, rows = cursor.executemany_calls[0]
-        assert rows[0][4] == "FILL_BLANK"
-        assert rows[0][6] is None
-        assert json.loads(rows[0][7]) == ["n-1", "n − 1"]
-
-    def test_persist_curriculum_lesson_cards_appends_in_card_order(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.fetchone_result = (1,)  # LO hiện hành
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        def card(card_id: str, index: int) -> StoredLessonCard:
-            return StoredLessonCard(
-                card_id=card_id,
-                document_id="doc-001",
-                primary_chunk_id="chunk-001",
-                source_chunk_ids=("chunk-001",),
-                title=f"Card {index}",
-                bullets=("Ý một", "Ý hai"),
-                key_insight="Ý chính.",
-                example="Ví dụ.",
-                check_question="Hỏi?",
-                check_answer="Đáp.",
-                card_index=index,
-                model_id="gemini-test",
-            )
-
-        result = store.persist_curriculum_lesson_cards(
-            lo_id="11111111-1111-4111-8111-111111111111",
-            lesson_cards=[card("card-b", 1), card("card-a", 0)],
-        )
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        query, rows = cursor.executemany_calls[0]
-        assert "INSERT INTO lesson_cards" in query
-        assert "MAX(lc.position) + 1" in query
-        assert "WHERE lesson_cards.status = 'GENERATED_DRAFT'" in query
-        assert [row[4] for row in rows] == ["Card 0", "Card 1"]
-        content = json.loads(rows[0][5])
-        assert content["check_question"] == "Hỏi?"
-        assert content["check_answer"] == "Đáp."
-        assert content["example"] == "Ví dụ."
-        assert content["misconception"] is None
-
-    def test_persist_curriculum_lesson_cards_refuses_unknown_lo(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.fetchone_result = None  # LO không tồn tại / không còn hiện hành
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.persist_curriculum_lesson_cards(
-            lo_id="11111111-1111-4111-8111-111111111111",
-            lesson_cards=[
-                StoredLessonCard(card_id="card-a", document_id="doc", primary_chunk_id="chunk")
-            ],
-        )
-
-        assert result.is_err()
-        assert "not current" in str(result.error)
-        assert cursor.executemany_calls == []
-        assert connection.commit_calls == 0
-
-
 def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
     store = PostgresMetadataStore(SqlConfig(enabled=True))
     cursor = _FakeCursor()
@@ -440,8 +168,8 @@ def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
     assert connection.commit_calls == 1
 
 
-class TestAnswerGrading:
-    """Chấm tự luận: chỉ chấm câu còn PENDING, mở AGS khi mọi câu của lượt đã GRADED."""
+class TestSoftDeleteDocumentChunks:
+    """DOCUMENT_DELETED: ẩn chunks của tài liệu đã xoá, không bao giờ đụng documents."""
 
     def _store(self, monkeypatch, cursor):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
@@ -454,70 +182,41 @@ class TestAnswerGrading:
         monkeypatch.setattr(store, "_connection", fake_connection)
         return store, connection
 
-    def test_save_grade_only_touches_pending_rows(self, monkeypatch):
-        cursor = _FakeCursor()
-        cursor.rowcount = 0  # worker retry: câu đã được chấm ở lượt trước
-        store, connection = self._store(monkeypatch, cursor)
-
-        result = store.save_answer_grade(
-            attempt_id="00000000-0000-0000-0000-000000000001",
-            score=50,
-            is_correct=False,
-            feedback="Thiếu ý 2.",
-        )
-
-        assert result.unwrap() is False
-        query, params = cursor.execute_calls[0]
-        assert "grading_status = 'GRADED'" in query
-        assert "grading_status = 'PENDING'" in query
-        assert params[:3] == (50, False, "Thiếu ý 2.")
-        assert connection.commit_calls == 1
-
-    def test_needs_review_keeps_the_score_untouched(self, monkeypatch):
-        cursor = _FakeCursor()
-        cursor.rowcount = 1
-        store, connection = self._store(monkeypatch, cursor)
-
-        result = store.mark_answer_needs_review(
-            attempt_id="00000000-0000-0000-0000-000000000001",
-            feedback="Giảng viên sẽ chấm câu này.",
-        )
-
-        assert result.unwrap() is True
-        query, params = cursor.execute_calls[0]
-        assert "grading_status = 'NEEDS_REVIEW'" in query
-        assert "score" not in query
-        assert "grading_status = 'PENDING'" in query
-        assert params[0] == "Giảng viên sẽ chấm câu này."
-        assert connection.commit_calls == 1
-
-    def test_release_waits_for_every_essay_of_the_submission(self, monkeypatch):
+    def test_only_live_chunks_of_a_deleted_document_in_one_commit(self, monkeypatch):
         cursor = _FakeCursor()
         cursor.rowcount = 3
-        store, _ = self._store(monkeypatch, cursor)
-        ids = ["00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"]
+        store, connection = self._store(monkeypatch, cursor)
 
-        assert store.release_graded_attempts(ids).unwrap() == 3
-        lock, _ = cursor.execute_calls[0]
-        assert "FOR UPDATE" in lock and "ORDER BY attempt_id" in lock
-        query, params = cursor.execute_calls[1]
-        assert "ags_status = 'AWAITING_GRADE'" in query
-        # NEEDS_REVIEW cũng giữ cả lượt: lỗi chấm không được thành điểm trên LMS.
-        assert "NOT EXISTS" in query and "grading_status <> 'GRADED'" in query
-        assert params == (ids, ids)
+        result = store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111")
 
-    def test_list_answers_maps_rows(self, monkeypatch):
+        assert result.unwrap() == 3
+        assert connection.commit_calls == 1
+        [(sql, params)] = cursor.execute_calls
+        assert sql.lstrip().startswith("UPDATE chunks")
+        # idempotent: chunk đã xoá không bị đặt lại deleted_at
+        assert "deleted_at IS NULL" in sql
+        # chỉ ẩn khi core-api đã soft-delete tài liệu
+        assert "d.deleted_at IS NOT NULL" in sql
+        assert params == ("11111111-1111-4111-8111-111111111111",)
+        assert "documents SET" not in sql
+
+    def test_second_call_hides_nothing(self, monkeypatch):
         cursor = _FakeCursor()
-        cursor.fetchall_result = [
-            ("a1", "q1", "c1", "SHORT_ANSWER", "Vì sao?", {"model_answer": "M", "rubric": ["R"]}, "Bài làm", "PENDING")
-        ]
+        cursor.rowcount = 0
         store, _ = self._store(monkeypatch, cursor)
 
-        [answer] = store.list_answers_for_grading(["00000000-0000-0000-0000-000000000001"]).unwrap()
+        assert store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111").unwrap() == 0
 
-        query, _ = cursor.execute_calls[0]
-        assert "grading_input" in query and "quiz_items" not in query
-        assert answer.question_type == "SHORT_ANSWER"
-        assert answer.correct_answer == {"model_answer": "M", "rubric": ["R"]}
-        assert answer.chosen_answer == "Bài làm"
-        assert answer.grading_status == "PENDING"
+    def test_database_error_is_returned_not_raised(self, monkeypatch):
+        cursor = _FakeCursor()
+
+        def boom(query, params):
+            raise RuntimeError("db down")
+
+        cursor.execute = boom
+        store, connection = self._store(monkeypatch, cursor)
+
+        result = store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111")
+
+        assert result.is_err()
+        assert connection.commit_calls == 0

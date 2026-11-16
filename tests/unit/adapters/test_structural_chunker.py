@@ -253,3 +253,78 @@ def test_real_bge_tokenizer_budget():
         ],
     )
     assert len(chunks) > 1
+
+
+def pdf_slides(slides):
+    """PDF đã đọc theo slide: (trang, tiêu đề, các khối chữ)."""
+    from document_chunk.adapters.parsers.pdf_slides import slide_section
+
+    sections = [
+        slide_section(page, title, [{"kind": "text", "text": t} for t in texts], source={})
+        for page, title, texts in slides
+    ]
+    document = Document("doc-1", "deck.pdf", None, DocumentType.PDF, 0, "application/pdf")
+    return ParsedDocument(document, sections, len(slides), metadata={"layout": "slides"})
+
+
+FOUR_VS = [
+    (1, "Big data", ["Big data is described by four properties."]),
+    (2, "Velocity", ["Data is generated fast and needs to be processed fast."]),
+    (3, "Veracity", []),  # chỉ có tiêu đề và hình
+    (4, "Value", ["Translate data into business advantage."]),
+]
+
+
+def test_title_only_slide_keeps_its_title(counter):
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    text = "\n".join(c.content + " " + " > ".join(c.metadata.heading_path) for c in chunks)
+    assert "Veracity" in text
+    # Gộp với slide bên cạnh thì tên slide chỉ in một lần.
+    assert all(c.content.count("Veracity") <= 1 for c in chunks)
+
+
+def test_split_slides_by_page_keeps_page_number_exact(counter):
+    cfg = ChunkerConfig(strategy="structural", split_slides_by_page=True)
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    assert [c.metadata.page_number for c in chunks] == [1, 2, 3, 4]
+    assert all(c.metadata.page_start == c.metadata.page_end for c in chunks)
+    assert chunks[2].content == "Veracity"
+
+
+def test_slides_merge_across_pages_by_default(counter):
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(FOUR_VS)).unwrap()
+
+    assert len(chunks) < 4
+    assert any(c.metadata.page_end != c.metadata.page_start for c in chunks)
+
+
+def test_merged_chunk_cites_the_page_holding_most_of_its_text(counter):
+    # Slide ngăn mục chỉ có tiêu đề bị gộp vào slide nội dung phía sau; trích
+    # dẫn phải trỏ tới trang nội dung chứ không phải trang tiêu đề.
+    deck = [
+        (1, "Finding similar items", []),
+        (26, "Min-Hashing", []),
+        (
+            27,
+            "The Min-Hash property",
+            [
+                "Choose a random permutation of the rows.",
+                "Claim: the probability that two columns get the same min-hash "
+                "equals their Jaccard similarity.",
+            ],
+        ),
+    ]
+    cfg = ChunkerConfig(strategy="structural")
+    chunks = StructuralChunker(cfg, counter).chunk(pdf_slides(deck)).unwrap()
+
+    claim = next(c for c in chunks if "Claim" in c.content).metadata
+    assert claim.page_start < claim.page_end == 27
+    assert claim.page_number == 27
+    # Nhãn nguồn khớp với trang được trích: tiêu đề của slide trang 27.
+    assert claim.heading_path[-1] == "The Min-Hash property"
+    # Trang bìa chỉ có tên bài vẫn mang số trang của nó.
+    assert min(c.metadata.page_start for c in chunks) == 1

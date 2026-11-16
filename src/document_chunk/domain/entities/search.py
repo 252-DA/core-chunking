@@ -15,6 +15,7 @@ class SearchFilter:
     exclude_content_types: tuple[str, ...] = ("toc",)
     doc_types: tuple[DocumentType, ...] = ()     # [] = không filter
     document_ids: tuple[str, ...] = ()           # filter theo document cụ thể
+    exclude_document_ids: tuple[str, ...] = ()   # loại các document này (vd. tài liệu bị ẩn ở LMS)
     language: str | None = None                  # "vi", "en", None = all
     course_id: str | None = None
     owner_id: str | None = None

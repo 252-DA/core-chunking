@@ -35,35 +35,6 @@ class PostgresDocumentPlacementRepository(PostgresRepositoryBase):
         except Exception as exc:
             return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
-    def set_document_chapter(
-        self,
-        document_id: str,
-        chapter_code: str,
-        provenance: str,
-        confidence: float,
-        reason: str,
-    ) -> Result[bool, Exception]:
-        try:
-            with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        UPDATE documents
-                           SET chapter_code = %s,
-                               chapter_provenance = %s,
-                               chapter_confidence = %s,
-                               chapter_reason = %s
-                         WHERE document_id = %s::uuid
-                           AND chapter_provenance IS DISTINCT FROM 'confirmed';
-                        """,
-                        (chapter_code, provenance, round(confidence, 2), reason[:255], document_id),
-                    )
-                    updated = cur.rowcount > 0
-                conn.commit()
-            return Ok(updated)
-        except Exception as exc:
-            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
-
     def delete_inferred_chunk_lo_mappings(self, document_id: str) -> Result[int, Exception]:
         try:
             with self._connection() as conn:

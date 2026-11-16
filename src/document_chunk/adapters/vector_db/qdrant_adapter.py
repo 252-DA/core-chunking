@@ -362,4 +362,9 @@ class QdrantAdapter(IVectorStore):
         excluded = [qmodels.FieldCondition(
             key="content_type", match=qmodels.MatchAny(any=list(filters.exclude_content_types)),
         )] if filters.exclude_content_types else []
+        if filters.exclude_document_ids:
+            excluded.append(qmodels.FieldCondition(
+                key=_F_DOCUMENT_ID,
+                match=qmodels.MatchAny(any=list(filters.exclude_document_ids)),
+            ))
         return qmodels.Filter(must=conditions, must_not=excluded) if conditions or excluded else None

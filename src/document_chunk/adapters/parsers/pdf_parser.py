@@ -40,6 +40,10 @@ from document_chunk.adapters.parsers.pdf_page_assessment import (
     has_column_gutter,
     missing_text_error,
 )
+from document_chunk.adapters.parsers.pdf_slides import (
+    build_slide_sections,
+    looks_like_slides,
+)
 from document_chunk.domain.entities.document import (
     Document,
     DocumentType,
@@ -234,17 +238,22 @@ class PdfParser(IParser):
             if self._config.pdf_extract_images:
                 self._collect_images(doc, page, page_number, images, budget)
 
-        # Pass 4: heading thresholds + sections, theo thứ tự trang.
+        # Pass 4: heading thresholds + sections, theo thứ tự trang. PDF slide thì
+        # mỗi trang một slide, không đoán heading trên cả file.
         body_lines = [
             line
             for page_number in sorted(pages)
             for line in pages[page_number]["lines"]
         ]
-        sections = (
-            self._build_sections(pages, self._compute_heading_thresholds(body_lines))
-            if body_lines
-            else []
-        )
+        slides = looks_like_slides(pages, self._config.pdf_slide_mode)
+        if not body_lines:
+            sections = []
+        elif slides:
+            sections = build_slide_sections(pages, PARSER_NAME)
+        else:
+            sections = self._build_sections(
+                pages, self._compute_heading_thresholds(body_lines)
+            )
 
         needs_fallback = [a.page_number for a in assessments if a.needs_fallback]
         if not sections and not images and not needs_fallback:
@@ -281,6 +290,7 @@ class PdfParser(IParser):
             language=None,
             metadata={
                 "parser": PARSER_NAME,
+                "layout": "slides" if slides else "flow",
                 "page_report": report,
                 "coverage": cov,
                 "budget": {

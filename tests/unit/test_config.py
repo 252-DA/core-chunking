@@ -11,8 +11,6 @@ from document_chunk.infrastructure.config import (
     ChunkerConfig,
     EmbedderConfig,
     get_settings,
-    GrpcConfig,
-    HttpConfig,
     LlamaIndexChunkerConfig,
     LlmConfig,
     MetricsConfig,
@@ -42,21 +40,6 @@ class TestAppConfig:
             assert cfg.debug is True
 
 
-class TestGrpcConfig:
-    def test_defaults(self):
-        cfg = GrpcConfig()
-        assert cfg.host == "0.0.0.0"
-        assert cfg.port == 50051
-        assert cfg.max_workers == 10
-
-
-class TestHttpConfig:
-    def test_defaults(self):
-        cfg = HttpConfig()
-        assert cfg.host == "0.0.0.0"
-        assert cfg.port == 8000
-
-
 class TestQdrantConfig:
     def test_defaults(self):
         cfg = QdrantConfig()
@@ -72,6 +55,12 @@ class TestMinioConfig:
         assert cfg.endpoint == "localhost:9000"
         assert cfg.access_key == "minioadmin"
         assert cfg.bucket_name == "documents"
+        assert cfg.region is None
+
+    def test_region_env_override(self):
+        # R2 dùng region "auto"; MinioAdapter chuyển nó thẳng vào Minio(region=...).
+        with mock.patch.dict(os.environ, {"MINIO_REGION": "auto"}):
+            assert MinioConfig().region == "auto"
 
 
 class TestSqlConfig:
@@ -147,7 +136,7 @@ class TestLlmConfig:
         # ai-sdk (docs/model-routing-design.md).
         cfg = LlmConfig()
         assert cfg.provider == "gemini"
-        assert cfg.model == "gemini-3-flash-preview"
+        assert cfg.model == "gemini-3.1-flash-lite"
         assert cfg.temperature == 0.2
         assert cfg.timeout_seconds == 60
 
@@ -158,7 +147,7 @@ class TestLlmConfig:
         assert LlmConfig().model == "from-nested"
 
         monkeypatch.delenv("LLM__MODEL")
-        assert LlmConfig().model == "gemini-3-flash-preview"
+        assert LlmConfig().model == "gemini-3.1-flash-lite"
 
 
 class TestTracingConfig:
@@ -191,8 +180,7 @@ class TestSettings:
     def test_all_sub_configs_present(self):
         settings = Settings()
         assert settings.app is not None
-        assert settings.grpc is not None
-        assert settings.http is not None
+        assert settings.mcp is not None
         assert settings.qdrant is not None
         assert settings.minio is not None
         assert settings.sql is not None

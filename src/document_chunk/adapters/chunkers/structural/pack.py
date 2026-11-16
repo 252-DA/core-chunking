@@ -4,7 +4,12 @@ from math import ceil
 from .model import Draft, Run, render
 
 
-def pack(node, units, counter, cfg):
+def pages(draft):
+    return {u.block.page for run in draft.runs for u in run.units} - {None}
+
+
+def pack(node, units, counter, cfg, split_pages=False):
+    """``split_pages``: cắt ở mỗi lần đổi trang, kể cả khi chunk còn chỗ."""
     if not units:
         return []
     total = counter.count(render(Draft(node.path, [Run(node, units)])))
@@ -26,8 +31,10 @@ def pack(node, units, counter, cfg):
             else False
         )
         soft_cut = size >= per and (natural or size >= per * cfg.oversize_tolerance)
+        new_page = split_pages and current and unit.block.page != current[-1].block.page
         if current and (
             isolate
+            or new_page
             or counter.count(text) > cfg.max_tokens
             or (soft_cut and not current[-1].glue_next)
         ):
@@ -46,6 +53,7 @@ def pack(node, units, counter, cfg):
         )
         if (
             not any(u.block.kind == "toc" for d in (prev, last) for u in d.runs[0].units)
+            and not (split_pages and len(pages(combined)) > 1)
             and counter.count(render(combined)) <= cfg.max_tokens
         ):
             drafts[-2:] = [combined]
@@ -63,7 +71,7 @@ def common_prefix(a, b):
     return a[:length]
 
 
-def consolidate(drafts, counter, cfg):
+def consolidate(drafts, counter, cfg, split_pages=False):
     # Revisit only the changed neighbourhood; each merge reduces draft count.
     out = list(drafts)
     merges = 0
@@ -92,6 +100,8 @@ def consolidate(drafts, counter, cfg):
             if any(
                 u.block.kind == "toc" for draft in (x, y) for run in draft.runs for u in run.units
             ):
+                continue
+            if split_pages and len(pages(x) | pages(y)) > 1:
                 continue
             path = common_prefix(x.path, y.path)
             if not path and (x.path or y.path) and not cfg.merge_across_top_level:

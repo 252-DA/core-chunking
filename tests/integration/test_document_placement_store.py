@@ -62,19 +62,6 @@ def test_placement_defaults_to_lecture_without_chapter(store):
     assert (placement.role, placement.chapter_code, placement.chapter_provenance) == ("lecture", None, None)
 
 
-def test_system_chapter_never_overrides_teacher_choice(store):
-    assert store.set_document_chapter(LECTURE, "1", "content", 0.617, "khớp nội dung").unwrap() is True
-    placement = store.get_document_placement(LECTURE).unwrap()
-    assert (placement.chapter_code, placement.chapter_provenance, placement.chapter_confidence) == ("1", "content", 0.62)
-
-    with store._connection() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE documents SET chapter_code = '2', chapter_provenance = 'confirmed' "
-                    "WHERE document_id = %s;", (LECTURE,))
-        conn.commit()
-    assert store.set_document_chapter(LECTURE, "1", "content", 0.9, "khớp nội dung").unwrap() is False
-    assert store.get_document_placement(LECTURE).unwrap().chapter_code == "2"
-
-
 def test_lecture_chunks_come_before_reference_chunks(store):
     store.upsert_chunk_lo_mappings([
         StoredChunkLOMapping(chunk_id=REFERENCE_CHUNK, lo_id=LO, confidence=0.7, source="section"),

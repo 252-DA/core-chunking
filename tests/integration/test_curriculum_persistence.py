@@ -12,10 +12,9 @@ import pytest
 
 from document_chunk.adapters.curriculum.dcmh_extractor import DcmhExtractor
 from document_chunk.adapters.metadata.postgres_metadata_store import PostgresMetadataStore
-from document_chunk.application.use_cases.ingest_curriculum import IngestCurriculumUseCase
-from document_chunk.adapters.graph.noop_graph_store import NoopGraphStore
 from document_chunk.domain.entities.document import Document, DocumentType, ParsedDocument
 from document_chunk.infrastructure.config import SqlConfig
+from tests.integration.curriculum_seed import seed_curriculum
 
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "syllabus" / "DCMH.CO3011.pdf"
 _DSN = os.getenv("TEST_SQL_DSN")
@@ -49,13 +48,7 @@ def ingested(store):
     )
     curriculum = DcmhExtractor().extract(parsed, course_id_hint="CO3011").unwrap()
 
-    use_case = IngestCurriculumUseCase(
-        parsers=[],
-        curriculum_extractor=None,
-        metadata_store=store,
-        graph_store=NoopGraphStore(),
-    )
-    result = use_case._persist_to_postgres(curriculum)
+    result = seed_curriculum(store, curriculum)
     assert result.is_ok(), str(result.error)
     return curriculum
 

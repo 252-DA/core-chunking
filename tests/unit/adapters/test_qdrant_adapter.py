@@ -23,6 +23,45 @@ def test_structural_payload_and_default_toc_filter(sample_chunk, qdrant_config):
     assert adapter._build_filter(SearchFilter(exclude_content_types=())) is None
 
 
+def test_filter_excludes_hidden_document_ids_next_to_toc(qdrant_config):
+    from document_chunk.domain.entities.search import SearchFilter
+    adapter = QdrantAdapter(qdrant_config)
+    built = adapter._build_filter(SearchFilter(exclude_document_ids=('hidden-1', 'hidden-2')))
+    assert built.must_not[0].match.any == ['toc']
+    assert built.must_not[1].key == 'document_id'
+    assert built.must_not[1].match.any == ['hidden-1', 'hidden-2']
+    only_hidden = adapter._build_filter(SearchFilter(exclude_content_types=(), exclude_document_ids=('hidden-1',)))
+    assert [c.match.any for c in only_hidden.must_not] == [['hidden-1']]
+
+
+def test_search_drops_hidden_documents_but_still_fills_top_k(sample_chunk, qdrant_config):
+    import uuid
+    from dataclasses import replace
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models
+    from document_chunk.domain.entities.embedding import Embedding
+    from document_chunk.domain.entities.search import SearchFilter
+    adapter = QdrantAdapter(qdrant_config)
+    client = QdrantClient(':memory:')
+    client.create_collection(qdrant_config.collection_name, vectors_config=models.VectorParams(size=3, distance=models.Distance.COSINE))
+    adapter.__dict__['_client'] = client
+    embed = lambda c, v: Embedding(c.id, v, 'test', 3)
+    # Tài liệu bị ẩn gần câu hỏi nhất; hai tài liệu còn lại xa hơn.
+    hidden = replace(sample_chunk, id=str(uuid.uuid4()), metadata=replace(sample_chunk.metadata, document_id='hidden'))
+    shown = [
+        replace(sample_chunk, id=str(uuid.uuid4()), metadata=replace(sample_chunk.metadata, document_id=f'shown-{i}'))
+        for i in range(2)
+    ]
+    vectors = [(1., 0., 0.), (0.9, 0.1, 0.), (0.8, 0.2, 0.)]
+    chunks = [hidden, *shown]
+    assert adapter.upsert(chunks, [embed(c, v) for c, v in zip(chunks, vectors)]).is_ok()
+
+    result = adapter.search([1., 0., 0.], top_k=2, filters=SearchFilter(exclude_document_ids=('hidden',)))
+
+    assert [r.chunk.metadata.document_id for r in result.unwrap()] == ['shown-0', 'shown-1']
+    client.close()
+
+
 def test_snapshot_cleanup_keeps_new_ids_and_other_documents(sample_chunk, qdrant_config):
     import uuid
     from dataclasses import replace
