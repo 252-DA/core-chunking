@@ -116,7 +116,7 @@ class StoredQuizItem:
     question_index: int = 0
     model_id: str | None = None
     # Kiểu câu và đáp án dạng JSON ghi vào quiz_items.correct_answer (xem
-    # core-api quiz/question-types.ts). ``correct_answer`` None nghĩa là trắc
+    # core-api src/modules/question/question-types.ts). ``correct_answer`` None nghĩa là trắc
     # nghiệm một đáp án: lấy ``choices[correct_index]`` như trước.
     question_type: str = "MCQ_SINGLE"
     correct_answer: Any = None

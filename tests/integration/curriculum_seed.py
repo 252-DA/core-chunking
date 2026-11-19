@@ -2,7 +2,7 @@
 Mồi một Curriculum vào DB test bằng SQL viết thẳng trong test.
 
 Từ 2026-11-07 code chạy thật không còn ghi đề cương từ Python (core-api ghi khi
-giảng viên áp dụng, core-api/src/curriculum/curriculum-writer.ts) và
+giảng viên áp dụng, core-api/src/modules/curriculum/services/curriculum-writer.ts) và
 ``IMetadataStore.upsert_curriculum`` đã bị xoá. Các test tích hợp đọc đề cương
 (repository đọc, MapChunksToLos) vẫn cần dữ liệu mồi, nên helper này tự INSERT
 9 bảng đề cương: giữ đúng id (``stable_uuid``), đúng cột và cùng cách ánh xạ như
