@@ -18,6 +18,10 @@ class SearchRequest(BaseModel):
     course_id: str | None = None
     owner_id: str | None = None
 
+    # Chatbot (học viên) bật cờ này để không thấy tài liệu bị ẩn ở LMS hay đã xoá. Mặc
+    # định tắt: phía giảng viên (sinh quiz, gRPC/HTTP search) vẫn thấy tài liệu chưa publish.
+    exclude_hidden: bool = False
+
     @field_validator("query")
     @classmethod
     def query_must_not_be_empty(cls, v: str) -> str:

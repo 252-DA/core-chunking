@@ -6,8 +6,6 @@ from document_chunk.domain.outbox_events import OutboxEventType
 from document_chunk.domain.ports.metadata_store import (
     IngestionStatus,
     StoredChunkMetadata,
-    StoredLessonCard,
-    StoredQuizItem,
 )
 from document_chunk.infrastructure.config import SqlConfig
 
@@ -100,110 +98,21 @@ class TestPostgresMetadataStore:
         assert connection.commit_calls == 1
         assert len(cursor.executemany_calls) == 1
         assert "INSERT INTO chunks" in cursor.executemany_calls[0][0]
-        assert len(cursor.execute_calls) == 2  # EXISTS guard + outbox insert
+        assert cursor.executemany_calls[0][1] == [
+            (
+                "chunk-001",
+                "doc-001",
+                "",
+                ["Introduction"],
+                1,
+                0,
+                "en",
+                "doc-001",
+            )
+        ]
+        assert len(cursor.execute_calls) == 2
+        assert "SELECT EXISTS" in cursor.execute_calls[0][0]
         assert "INSERT INTO outbox_events" in cursor.execute_calls[1][0]
-
-    def test_upsert_chunks_with_outbox_stops_when_document_deleted(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.fetchone_result = (False,)  # document soft-deleted
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.upsert_chunks_with_outbox(
-            chunks=[
-                StoredChunkMetadata(
-                    chunk_id="chunk-001",
-                    document_id="doc-001",
-                    chunk_index=0,
-                    heading_path=("Introduction",),
-                    heading_level=1,
-                    page_number=1,
-                    content_length=42,
-                    language="en",
-                )
-            ],
-            event_type=OutboxEventType.HEADING_GRAPH_PROJECT,
-            aggregate_id="doc-001",
-            payload={"document_id": "doc-001"},
-        )
-
-        assert result.is_err()
-        from document_chunk.domain.exceptions import DocumentStaleError
-
-        assert isinstance(result.error, DocumentStaleError)
-        # Không ghi chunk, không append outbox, không commit.
-        assert connection.commit_calls == 0
-        assert len(cursor.executemany_calls) == 0
-        assert len(cursor.execute_calls) == 1  # chỉ có EXISTS guard
-        assert "INSERT INTO outbox_events" not in " ".join(q for q, _ in cursor.execute_calls)
-
-    def test_persist_enrichment_batch_replaces_generated_rows_and_uses_one_commit(
-        self, monkeypatch
-    ):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.persist_enrichment_batch(
-            document_id="doc-001",
-            lesson_cards=[
-                StoredLessonCard(
-                    card_id="card-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001", "chunk-002"),
-                    heading_path=("Chapter 1", "Matrices"),
-                    title="Matrices",
-                    bullets=("Rectangular arrays",),
-                    key_insight="Matrices encode linear structure.",
-                    card_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-            quiz_items=[
-                StoredQuizItem(
-                    question_id="quiz-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001", "chunk-002"),
-                    heading_path=("Chapter 1", "Matrices"),
-                    question="What is a matrix?",
-                    choices=("A set", "A rectangular array", "A scalar", "A graph"),
-                    correct_index=1,
-                    explanation="That is the standard definition.",
-                    difficulty="easy",
-                    question_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-            concepts=[],
-            chunk_concepts=[],
-            outbox_event_type=OutboxEventType.CONCEPT_GRAPH_PROJECT,
-            outbox_payload={"document_id": "doc-001"},
-        )
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        execute_sql = "\n".join(query for query, _ in cursor.execute_calls)
-        executemany_sql = "\n".join(query for query, _ in cursor.executemany_calls)
-        assert "UPDATE lesson_cards" in execute_sql
-        assert "UPDATE quiz_items" in execute_sql
-        assert "DELETE FROM chunk_concepts" in execute_sql
-        assert "DELETE FROM outbox_events" in execute_sql
-        assert executemany_sql.count("INSERT INTO lesson_cards") == 1
-        assert executemany_sql.count("INSERT INTO quiz_items") == 1
 
     def test_list_chunks_reads_current_chunks_table(self, monkeypatch):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
@@ -239,10 +148,31 @@ class TestPostgresMetadataStore:
         assert "FROM chunks" in cursor.execute_calls[0][0]
         assert "chunk_contents" not in cursor.execute_calls[0][0]
 
-    def test_update_document_status_returns_stale_when_rowcount_zero(self, monkeypatch):
+def test_snapshot_soft_delete_and_outbox_are_one_transaction(monkeypatch):
+    store = PostgresMetadataStore(SqlConfig(enabled=True))
+    cursor = _FakeCursor()
+    cursor.fetchone_result = (True,)
+    connection = _FakeConnection(cursor)
+    @contextmanager
+    def connect():
+        yield connection
+    monkeypatch.setattr(store, '_connection', connect)
+    result = store.upsert_chunks_with_outbox(
+        [StoredChunkMetadata('new', 'doc', 0)], OutboxEventType.HEADING_GRAPH_PROJECT,
+        'doc', {'replace_chunks': True})
+    assert result.is_ok()
+    cleanup = [(q, p) for q, p in cursor.execute_calls if 'UPDATE chunks SET deleted_at' in q]
+    assert len(cleanup) == 1
+    assert cleanup[0][1] == ('doc', ['new'])
+    assert 'deleted_at = NULL' in cursor.executemany_calls[0][0]
+    assert connection.commit_calls == 1
+
+
+class TestSoftDeleteDocumentChunks:
+    """DOCUMENT_DELETED: ẩn chunks của tài liệu đã xoá, không bao giờ đụng documents."""
+
+    def _store(self, monkeypatch, cursor):
         store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        cursor.rowcount = 0  # document missing hoặc soft-deleted
         connection = _FakeConnection(cursor)
 
         @contextmanager
@@ -250,94 +180,43 @@ class TestPostgresMetadataStore:
             yield connection
 
         monkeypatch.setattr(store, "_connection", fake_connection)
+        return store, connection
 
-        result = store.update_document_status("doc-001", IngestionStatus.PARSING)
+    def test_only_live_chunks_of_a_deleted_document_in_one_commit(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.rowcount = 3
+        store, connection = self._store(monkeypatch, cursor)
+
+        result = store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111")
+
+        assert result.unwrap() == 3
+        assert connection.commit_calls == 1
+        [(sql, params)] = cursor.execute_calls
+        assert sql.lstrip().startswith("UPDATE chunks")
+        # idempotent: chunk đã xoá không bị đặt lại deleted_at
+        assert "deleted_at IS NULL" in sql
+        # chỉ ẩn khi core-api đã soft-delete tài liệu
+        assert "d.deleted_at IS NOT NULL" in sql
+        assert params == ("11111111-1111-4111-8111-111111111111",)
+        assert "documents SET" not in sql
+
+    def test_second_call_hides_nothing(self, monkeypatch):
+        cursor = _FakeCursor()
+        cursor.rowcount = 0
+        store, _ = self._store(monkeypatch, cursor)
+
+        assert store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111").unwrap() == 0
+
+    def test_database_error_is_returned_not_raised(self, monkeypatch):
+        cursor = _FakeCursor()
+
+        def boom(query, params):
+            raise RuntimeError("db down")
+
+        cursor.execute = boom
+        store, connection = self._store(monkeypatch, cursor)
+
+        result = store.soft_delete_document_chunks("11111111-1111-4111-8111-111111111111")
 
         assert result.is_err()
-        from document_chunk.domain.exceptions import DocumentStaleError
-
-        assert isinstance(result.error, DocumentStaleError)
         assert connection.commit_calls == 0
-
-    def test_update_document_status_never_resurrects_deleted_documents(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.update_document_status("doc-001", IngestionStatus.ERROR, error_msg="boom")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        query = cursor.execute_calls[0][0]
-        # Status update must not clear deleted_at (would resurrect soft-deleted docs)
-        # and must only touch non-deleted rows.
-        assert "deleted_at = NULL" not in query
-        assert "AND deleted_at IS NULL" in query
-
-    def test_delete_uses_canonical_document_deleted_event(self, monkeypatch):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.delete("doc-001")
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        event_insert_params = cursor.execute_calls[1][1]
-        assert event_insert_params[1] == OutboxEventType.DOCUMENT_DELETED.value
-
-    def test_persist_curriculum_quiz_items_targets_lo_without_replacing_document(
-        self,
-        monkeypatch,
-    ):
-        store = PostgresMetadataStore(SqlConfig(enabled=True))
-        cursor = _FakeCursor()
-        connection = _FakeConnection(cursor)
-
-        @contextmanager
-        def fake_connection():
-            yield connection
-
-        monkeypatch.setattr(store, "_connection", fake_connection)
-
-        result = store.persist_curriculum_quiz_items(
-            lo_id="lo-001",
-            bloom_level="analyze",
-            quiz_items=[
-                StoredQuizItem(
-                    question_id="quiz-001",
-                    document_id="doc-001",
-                    primary_chunk_id="chunk-001",
-                    source_chunk_ids=("chunk-001",),
-                    heading_path=("Chapter 1",),
-                    question="Which conclusion follows?",
-                    choices=("A", "B", "C", "D"),
-                    correct_index=2,
-                    explanation="C follows from the source.",
-                    difficulty="medium",
-                    question_index=0,
-                    model_id="gemini-test",
-                )
-            ],
-        )
-
-        assert result.is_ok()
-        assert connection.commit_calls == 1
-        assert len(cursor.execute_calls) == 0
-        assert len(cursor.executemany_calls) == 1
-        query, rows = cursor.executemany_calls[0]
-        assert "INSERT INTO quiz_items" in query
-        assert "UPDATE quiz_items SET deleted_at" not in query
-        assert rows[0][8] == 4

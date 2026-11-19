@@ -33,6 +33,33 @@ def _event_schema_path(event_type: str) -> Path:
     return EVENT_SCHEMAS_DIR / f"{event_type.lower().replace('_', '-')}.json"
 
 
+WORKER_RESULT_ENVELOPE = EVENT_SCHEMAS_DIR / "worker-result-envelope.json"
+_ENVELOPE_ONLY_PREFIX = "worker-result-envelope"
+
+
+def _is_worker_result_fixture(path: Path, fixture: dict) -> bool:
+    """
+    Kết quả worker → core-api (hàng đợi worker_results): có ``result_id`` thay
+    cho ``event_type``. Fixture envelope sai dạng (có thể thiếu cả result_id)
+    nhận ra bằng tên file ``worker-result-envelope*``.
+    """
+    if "event_type" in fixture:
+        return False
+    return path.stem.startswith(_ENVELOPE_ONLY_PREFIX) or "result_id" in fixture
+
+
+def _worker_result_schema_path(path: Path, fixture: dict) -> Path:
+    """
+    ``worker-result-envelope*`` → chỉ kiểm envelope. Còn lại theo kind, cùng
+    quy ước với event: QUIZ_GRADING_RESULT → quiz-grading-result.json (schema
+    đó allOf $ref envelope và mô tả payload của kind).
+    """
+    kind = fixture.get("kind")
+    if path.stem.startswith(_ENVELOPE_ONLY_PREFIX) or not isinstance(kind, str):
+        return WORKER_RESULT_ENVELOPE
+    return _event_schema_path(kind)
+
+
 def _schema_store() -> dict[str, dict]:
     """Store keyed by schema $id (URL) để $ref cross-file resolve được."""
     store: dict[str, dict] = {}
@@ -85,7 +112,10 @@ def test_all_valid_fixtures_have_matching_schema() -> None:
     # Mỗi valid fixture phải có schema tương ứng (event type hoặc artifact-*)
     for path in VALID_FIXTURES:
         fixture = _load_json(path)
-        if "event_type" in fixture:
+        if _is_worker_result_fixture(path, fixture):
+            expected = _worker_result_schema_path(path, fixture)
+            assert expected.exists(), f"{path.name}: thiếu schema {expected.name}"
+        elif "event_type" in fixture:
             expected = _event_schema_path(fixture["event_type"])
             assert expected.exists(), f"{path.name}: thiếu schema {expected.name}"
         else:
@@ -100,7 +130,9 @@ def test_all_invalid_fixtures_are_rejected_by_their_schema() -> None:
     for path in INVALID_FIXTURES:
         fixture = _load_json(path)
         event_type = fixture.get("event_type")
-        if event_type:
+        if _is_worker_result_fixture(path, fixture):
+            schema = _load_json(_worker_result_schema_path(path, fixture))
+        elif event_type:
             schema = _load_json(_event_schema_path(event_type))
         else:
             # artifact-invalid fixtures: artifact-oversized → artifact-pointer schema
@@ -116,7 +148,14 @@ def test_all_invalid_fixtures_are_rejected_by_their_schema() -> None:
 @pytest.mark.parametrize("path", VALID_FIXTURES, ids=lambda p: p.name)
 def test_valid_fixture_passes_schema(path: Path) -> None:
     fixture = _load_json(path)
-    if "event_type" in fixture:
+    if _is_worker_result_fixture(path, fixture):
+        # Kiểm cả envelope trực tiếp: schema của kind quên allOf thì vẫn bắt được.
+        envelope_errors = list(
+            _validator_for(_load_json(WORKER_RESULT_ENVELOPE)).iter_errors(fixture)
+        )
+        assert not envelope_errors, f"{path.name}: {[e.message for e in envelope_errors]}"
+        schema = _load_json(_worker_result_schema_path(path, fixture))
+    elif "event_type" in fixture:
         schema = _load_json(_event_schema_path(fixture["event_type"]))
     else:
         kind = path.stem.removeprefix("artifact-")

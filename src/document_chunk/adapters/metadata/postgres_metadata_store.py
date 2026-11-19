@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, TypedDict, cast
@@ -7,14 +8,23 @@ from typing import Any, TypedDict, cast
 from document_chunk.adapters.metadata.postgres_chunk_repository import (
     PostgresChunkRepository,
 )
+from document_chunk.adapters.metadata.postgres_course_knowledge_repository import (
+    PostgresCourseKnowledgeRepository,
+)
 from document_chunk.adapters.metadata.postgres_curriculum_repository import (
     PostgresCurriculumRepository,
+)
+from document_chunk.adapters.metadata.postgres_document_placement_repository import (
+    PostgresDocumentPlacementRepository,
 )
 from document_chunk.adapters.metadata.postgres_document_repository import (
     PostgresDocumentRepository,
 )
 from document_chunk.adapters.metadata.postgres_enrichment_repository import (
     PostgresEnrichmentRepository,
+)
+from document_chunk.adapters.metadata.postgres_llm_usage_repository import (
+    PostgresLlmUsageRepository,
 )
 from document_chunk.adapters.metadata.postgres_outbox_repository import (
     PostgresOutboxRepository,
@@ -32,7 +42,10 @@ class PostgresMetadataStore(
     PostgresChunkRepository,
     PostgresEnrichmentRepository,
     PostgresCurriculumRepository,
+    PostgresDocumentPlacementRepository,
     PostgresOutboxRepository,
+    PostgresLlmUsageRepository,
+    PostgresCourseKnowledgeRepository,
     IMetadataStore,
 ):
     """PostgreSQL metadata facade composed from domain-focused repositories."""
@@ -40,6 +53,9 @@ class PostgresMetadataStore(
     def __init__(self, sql_config: SqlConfig) -> None:
         self._sql_config = sql_config
         self._pool: Any | None = None
+        # Worker chạy use case trong nhiều thread (asyncio.to_thread): hai job
+        # đầu tiên không được cùng tạo pool rồi bỏ rơi một cái.
+        self._pool_lock = threading.Lock()
 
     def close(self) -> None:
         pool = self._pool
@@ -80,13 +96,15 @@ class PostgresMetadataStore(
         except ImportError:
             return None
 
-        self._pool = ConnectionPool(
-            conninfo=self._sql_config.dsn,
-            min_size=1,
-            max_size=max(1, self._sql_config.pool_size),
-            kwargs=cast(dict[str, Any], self._connect_kwargs()),
-            open=True,
-        )
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ConnectionPool(
+                    conninfo=self._sql_config.dsn,
+                    min_size=1,
+                    max_size=max(1, self._sql_config.pool_size),
+                    kwargs=cast(dict[str, Any], self._connect_kwargs()),
+                    open=True,
+                )
         return self._pool
 
     def _connect_kwargs(self) -> _ConnectKwargs:

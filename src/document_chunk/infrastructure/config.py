@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,21 +18,6 @@ class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="APP_")
 
 
-class GrpcConfig(BaseSettings):
-    host: str = "0.0.0.0"
-    port: int = 50051
-    max_workers: int = 10
-
-    model_config = SettingsConfigDict(env_prefix="GRPC_")
-
-
-class HttpConfig(BaseSettings):
-    host: str = "0.0.0.0"
-    port: int = 8000
-
-    model_config = SettingsConfigDict(env_prefix="HTTP_")
-
-
 class McpConfig(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
@@ -45,6 +30,9 @@ class QdrantConfig(BaseSettings):
     host: str = "localhost"
     port: int = 6333
     api_key: str | None = None
+    # qdrant-client tự bật HTTPS khi có api_key mà không nói gì về https; Qdrant
+    # trên máy DB (qua Tailscale) chỉ nghe HTTP nên phải tắt tường minh.
+    https: bool = False
     collection_name: str = "documents"
     vector_size: int = 1024  # BGE-M3 default
 
@@ -57,6 +45,9 @@ class MinioConfig(BaseSettings):
     secret_key: str = "minioadmin"
     bucket_name: str = "documents"
     secure: bool = False  # True nếu dùng HTTPS
+    # "auto" cho Cloudflare R2. Để trống thì minio-py tự dò region của bucket
+    # bằng một request riêng, R2 có thể không trả lời được request đó.
+    region: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="MINIO_")
 
@@ -94,6 +85,29 @@ class ParserConfig(BaseSettings):
     pdf_dpi: int = 150
     pdf_max_pages: int | None = None  # None = không giới hạn
 
+    # PDF — ngân sách xử lý cho MỘT tài liệu.
+    # concurrency=1 chỉ chặn số tài liệu song song, không chặn chi phí một file.
+    pdf_max_file_bytes: int | None = 256 * 1024 * 1024   # None = không giới hạn
+    pdf_timeout_seconds: float | None = 600.0            # None = không giới hạn
+    pdf_extract_images: bool = False                      # bytes ảnh: chưa có consumer
+    pdf_max_image_bytes: int = 64 * 1024 * 1024          # chỉ áp khi extract_images=True
+
+    # PDF — ngưỡng đánh giá từng trang (xem pdf_page_assessment.py)
+    pdf_min_page_chars: int = 40          # dưới mức này → trang bị coi là thiếu text
+    pdf_scan_image_coverage: float = 0.5  # độ phủ ảnh ≥ mức này + ít text → trang scan
+    pdf_detect_tables: bool = True        # tìm bảng để route sang layout backend
+
+    # PDF — chính sách fallback và độ đầy đủ
+    pdf_page_fallback_enabled: bool = True    # chạy OCR/layout backend cho trang thiếu
+    pdf_full_fallback_page_ratio: float = 0.5  # ≥ tỉ lệ trang cần fallback → chạy cả file
+    pdf_max_fallback_ranges: int = 8           # số lần gọi layout backend tối đa
+    pdf_strict_missing_text: bool = True       # còn trang chưa ai đọc → Err, không Ok
+
+    # PDF xuất từ slide: mỗi trang thành một Section SLIDE như PPTX, tiêu đề là
+    # khối chữ lớn nhất trang (xem pdf_slides.py). "auto" nhận theo khổ ngang và
+    # mật độ chữ; "never" giữ cách đoán heading theo cỡ chữ trên cả file.
+    pdf_slide_mode: Literal["auto", "always", "never"] = "never"
+
     # PPTX
     pptx_include_notes: bool = True   # include speaker notes vào content
 
@@ -111,6 +125,30 @@ class ParserConfig(BaseSettings):
 
 
 class ChunkerConfig(BaseSettings):
+    strategy: Literal["heading", "structural"] = "heading"
+    target_tokens: int = Field(default=400, ge=8)
+    max_tokens: int = Field(default=512, ge=8)
+    min_tokens: int = Field(default=64, ge=0)
+    overlap_tokens: int = Field(default=48, ge=0)
+    header_max_tokens: int = Field(default=64, ge=0)
+    embed_max_tokens: int = Field(default=1024, ge=8)
+    oversize_tolerance: float = Field(default=1.15, ge=1)
+    tokenizer: str = "BAAI/bge-m3"
+    tokenizer_path: str | None = None
+    index_toc: bool = False
+    merge_across_top_level: bool = False
+    # Slide (PPTX hoặc PDF slide): không ghép hai trang vào một chunk, để
+    # page_number của chunk đúng là trang chứa nội dung.
+    split_slides_by_page: bool = False
+
+    @model_validator(mode="after")
+    def validate_budgets(self):
+        if not self.min_tokens <= self.target_tokens <= self.max_tokens:
+            raise ValueError("Require min_tokens <= target_tokens <= max_tokens")
+        if self.max_tokens + self.header_max_tokens + self.overlap_tokens + 2 > self.embed_max_tokens:
+            raise ValueError("Chunk, header, overlap and special tokens exceed embedding budget")
+        return self
+
     max_chunk_size: int = 1500     # chars
     min_chunk_size: int = 100      # chars
     overlap_size: int = 200        # chars
@@ -134,15 +172,20 @@ class LlamaIndexChunkerConfig(BaseSettings):
 
 
 class EmbedderConfig(BaseSettings):
-    provider: Literal["bge", "openai", "sentence_transformers"] = "bge"
+    provider: Literal["bge", "openai", "sentence_transformers", "grpc"] = "bge"
+
+    # Remote embedding-service
+    grpc_target: str = "embedding-service:50051"
 
     # BGE
     bge_model: str = "BAAI/bge-m3"
     bge_use_fp16: bool = True
 
     # Common
-    batch_size: int = 32
-    max_length: int = 8192
+    # Chunks are capped around 1,500 characters. Smaller batches avoid CPU OOM
+    # when the PDF parser and BGE model briefly coexist in the worker process.
+    batch_size: int = 4
+    max_length: int = 1024
 
     # OpenAI
     openai_api_key: str | None = None
@@ -152,8 +195,21 @@ class EmbedderConfig(BaseSettings):
 
 
 class LlmConfig(BaseSettings):
+    """
+    Cấu hình LLM còn lại sau khi chọn model chuyển sang catalog của ai-sdk.
+
+    Chọn model giờ là ``LLM_PROFILE__<TASK>`` (xem docs/model-routing-design.md);
+    các field provider/model/api_key dưới đây chỉ còn là đường tương thích cho
+    deployment vẫn đặt ``LLM__*``, và ``max_section_chars`` không liên quan tới
+    model nên vẫn thuộc về đây.
+
+    env_prefix dùng "LLM__" chứ không phải "LLM_": prefix của sub-config và
+    env_nested_delimiter của Settings vốn nhận cả hai chính tả cho cùng một
+    biến, và "LLM__" là chính tả mà compose đang dùng.
+    """
+
     provider: Literal["gemini", "openai-compatible", "deepseek"] = "gemini"
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3.1-flash-lite"
     api_key: str | None = None
     base_url: str | None = None
     temperature: float = 0.2
@@ -161,7 +217,7 @@ class LlmConfig(BaseSettings):
     max_retries: int = 2
     max_section_chars: int = 6000
 
-    model_config = SettingsConfigDict(env_prefix="LLM_")
+    model_config = SettingsConfigDict(env_prefix="LLM__")
 
 
 class TracingConfig(BaseSettings):
@@ -185,8 +241,6 @@ class MetricsConfig(BaseSettings):
 
 class Settings(BaseSettings):
     app: AppConfig = Field(default_factory=AppConfig)
-    grpc: GrpcConfig = Field(default_factory=GrpcConfig)
-    http: HttpConfig = Field(default_factory=HttpConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
     minio: MinioConfig = Field(default_factory=MinioConfig)

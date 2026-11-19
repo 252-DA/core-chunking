@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 from pydantic import BaseModel
 
+from tests.support import as_llm_client
 from document_chunk.application.services.structured_output import (
     extract_json_block,
     generate_structured_payload,
@@ -82,7 +83,7 @@ class TestParseModelOutput:
 
 class TestGenerateStructuredPayload:
     def test_first_attempt_succeeds_without_repair(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         llm.generate.return_value = Ok('{"name":"Alice","age":30}')
 
         result = generate_structured_payload(
@@ -97,7 +98,7 @@ class TestGenerateStructuredPayload:
         assert llm.generate.call_count == 1
 
     def test_initial_generation_failure_is_propagated(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         failure = RuntimeError("llm down")
         llm.generate.return_value = Err(failure)
 
@@ -113,7 +114,7 @@ class TestGenerateStructuredPayload:
         assert llm.generate.call_count == 1
 
     def test_invalid_json_triggers_one_successful_repair(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         llm.generate.side_effect = [
             Ok("not valid json"),
             Ok('{"name":"Repaired","age":99}'),
@@ -141,7 +142,7 @@ class TestGenerateStructuredPayload:
         )
 
     def test_named_schema_is_reflected_in_repair_prompt(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         llm.generate.side_effect = [
             Ok("invalid"),
             Ok('{"name":"Repaired","age":99}'),
@@ -159,7 +160,7 @@ class TestGenerateStructuredPayload:
         assert "Target schema (profile):" in llm.generate.call_args_list[1].args[0]
 
     def test_invalid_repair_returns_contextual_processing_error(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         llm.generate.side_effect = [Ok("invalid #1"), Ok("invalid #2")]
 
         result = generate_structured_payload(
@@ -178,7 +179,7 @@ class TestGenerateStructuredPayload:
         assert llm.generate.call_count == 2
 
     def test_invalid_repair_without_name_preserves_generic_error(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         llm.generate.side_effect = [Ok("invalid #1"), Ok("invalid #2")]
 
         result = generate_structured_payload(
@@ -194,7 +195,7 @@ class TestGenerateStructuredPayload:
         )
 
     def test_repair_generation_failure_is_propagated(self):
-        llm = MagicMock()
+        llm = as_llm_client(MagicMock())
         failure = RuntimeError("repair llm down")
         llm.generate.side_effect = [Ok("invalid"), Err(failure)]
 

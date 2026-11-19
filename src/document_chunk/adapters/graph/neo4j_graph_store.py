@@ -2,14 +2,11 @@ from functools import cached_property
 
 from document_chunk.domain.exceptions import GraphStoreError
 from document_chunk.domain.ports.graph_store import (
-    GraphAssessment,
-    GraphChapter,
     GraphChunk,
     GraphChunkConcept,
     GraphChunkLOEdge,
     GraphConcept,
     GraphDocument,
-    GraphLO,
     IGraphStore,
 )
 from document_chunk.infrastructure.config import Neo4jConfig
@@ -486,43 +483,6 @@ class Neo4jGraphStore(IGraphStore):
             concepts=concepts,
         )
 
-    def upsert_curriculum_graph(
-        self,
-        course_id: str,
-        course_code: str,
-        course_title_vi: str,
-        chapters: list[GraphChapter],
-        los: list[GraphLO],
-        assessments: list[GraphAssessment],
-        lo_assessment_links: list[tuple[str, str]],
-    ) -> Result[None, Exception]:
-        with tracer.start_as_current_span("neo4j.upsert_curriculum_graph") as span:
-            span.set_attribute("course_id", course_id)
-            span.set_attribute("lo.count", len(los))
-            try:
-                with self._driver.session(database=self._config.database) as session:
-                    session.execute_write(
-                        self._merge_curriculum,
-                        course_id,
-                        course_code,
-                        course_title_vi,
-                        [{"id": c.chapter_id, "code": c.code, "title": c.title, "order_index": c.order_index} for c in chapters],
-                        [
-                            {
-                                "id": lo.lo_id, "code": lo.code, "parent_code": lo.parent_code,
-                                "statement_vi": lo.statement_vi, "statement_en": lo.statement_en,
-                                "bloom_level": lo.bloom_level, "cdio_level": lo.cdio_level,
-                            }
-                            for lo in los
-                        ],
-                        [{"id": a.assessment_id, "code": a.code, "name_vi": a.name_vi, "category": a.category, "weight": a.weight} for a in assessments],
-                        [{"lo_id": link[0], "assessment_id": link[1]} for link in lo_assessment_links],
-                    )
-                return Ok(None)
-            except Exception as exc:
-                logger.error("neo4j_graph_store.curriculum_upsert_failed", course_id=course_id, error=str(exc))
-                return Err(GraphStoreError("Neo4j graph store operation failed", cause=exc))
-
     def upsert_chunk_lo_mappings(
         self,
         mappings: list[GraphChunkLOEdge],
@@ -571,91 +531,6 @@ class Neo4jGraphStore(IGraphStore):
             return Ok(result)
         except Exception as exc:
             return Err(GraphStoreError("Neo4j graph store operation failed", cause=exc))
-
-    @staticmethod
-    def _merge_curriculum(
-        tx,
-        course_id: str,
-        course_code: str,
-        course_title_vi: str,
-        chapters: list[dict],
-        los: list[dict],
-        assessments: list[dict],
-        lo_assessment_links: list[dict],
-    ) -> None:
-        tx.run(
-            """
-            MERGE (c:Course {id: $course_id})
-            ON CREATE SET c.created_at = datetime()
-            SET c.code = $code, c.title_vi = $title_vi, c.updated_at = datetime()
-            """,
-            course_id=course_id, code=course_code, title_vi=course_title_vi,
-        )
-
-        tx.run(
-            """
-            UNWIND $chapters AS ch
-            MERGE (c:Chapter {id: ch.id})
-            ON CREATE SET c.created_at = datetime()
-            SET c.code = ch.code, c.title = ch.title, c.order_index = ch.order_index, c.updated_at = datetime()
-            WITH c, ch
-            MATCH (course:Course {id: $course_id})
-            MERGE (course)-[:HAS_CHAPTER]->(c)
-            """,
-            course_id=course_id, chapters=chapters,
-        )
-
-        tx.run(
-            """
-            UNWIND $los AS lo
-            MERGE (l:LearningOutcome {id: lo.id})
-            ON CREATE SET l.created_at = datetime()
-            SET l.code = lo.code, l.parent_code = lo.parent_code,
-                l.statement_vi = lo.statement_vi, l.statement_en = lo.statement_en,
-                l.bloom_level = lo.bloom_level, l.cdio_level = lo.cdio_level,
-                l.updated_at = datetime()
-            WITH l, lo
-            MATCH (course:Course {id: $course_id})
-            MERGE (course)-[:HAS_LO]->(l)
-            """,
-            course_id=course_id, los=los,
-        )
-
-        tx.run(
-            """
-            UNWIND $los AS lo
-            WITH lo WHERE lo.parent_code IS NOT NULL
-            MATCH (parent:LearningOutcome {code: lo.parent_code})
-            MATCH (child:LearningOutcome {id: lo.id})
-            MERGE (parent)-[:PARENT_OF]->(child)
-            """,
-            los=los,
-        )
-
-        tx.run(
-            """
-            UNWIND $assessments AS a
-            MERGE (asmt:Assessment {id: a.id})
-            ON CREATE SET asmt.created_at = datetime()
-            SET asmt.code = a.code, asmt.name_vi = a.name_vi,
-                asmt.category = a.category, asmt.weight = a.weight, asmt.updated_at = datetime()
-            WITH asmt, a
-            MATCH (course:Course {id: $course_id})
-            MERGE (course)-[:HAS_ASSESSMENT]->(asmt)
-            """,
-            course_id=course_id, assessments=assessments,
-        )
-
-        if lo_assessment_links:
-            tx.run(
-                """
-                UNWIND $links AS link
-                MATCH (l:LearningOutcome {id: link.lo_id})
-                MATCH (a:Assessment {id: link.assessment_id})
-                MERGE (l)-[:EVALUATED_BY]->(a)
-                """,
-                links=lo_assessment_links,
-            )
 
     @staticmethod
     def _merge_chunk_lo_supports(tx, mappings: list[dict]) -> None:

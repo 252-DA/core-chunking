@@ -74,6 +74,13 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                                 )
                             )
                         self._upsert_chunks_cursor(cur, chunks)
+                        if payload.get("replace_chunks"):
+                            cur.execute(
+                                """UPDATE chunks SET deleted_at = now()
+                                   WHERE document_id = %s::uuid AND deleted_at IS NULL
+                                     AND NOT (chunk_id = ANY(%s::uuid[]));""",
+                                (document_id, [c.chunk_id for c in chunks]),
+                            )
                         self._append_outbox_event_cursor(
                             cur=cur,
                             event_id=event_id,
@@ -87,6 +94,40 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 return Err(
                     MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc)
                 )
+
+    def soft_delete_document_chunks(self, document_id: str) -> Result[int, Exception]:
+        """
+        Ẩn chunks của tài liệu mà core-api đã soft-delete (DOCUMENT_DELETED).
+
+        ``chunks`` là bảng AI do worker sở hữu nên việc đặt ``deleted_at`` nằm ở
+        đây; ``documents`` do core-api ghi và không bị đụng tới. Chỉ ẩn khi tài
+        liệu thật sự đã xoá: sự kiện đến nhầm cho tài liệu còn sống không được
+        làm biến mất chunks của nó. Chỉ đụng chunk chưa xoá nên gọi lại là no-op
+        (BullMQ có thể chạy lại cả job khi Qdrant/Neo4j lỗi).
+        """
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE chunks
+                        SET deleted_at = now()
+                        WHERE document_id = %s::uuid
+                          AND deleted_at IS NULL
+                          AND EXISTS (
+                              SELECT 1
+                              FROM documents d
+                              WHERE d.document_id = chunks.document_id
+                                AND d.deleted_at IS NOT NULL
+                          );
+                        """,
+                        (document_id,),
+                    )
+                    affected = cur.rowcount
+                conn.commit()
+            return Ok(affected)
+        except Exception as exc:
+            return Err(MetadataStoreError("PostgreSQL metadata store operation failed", cause=exc))
 
     def list_chunks(self, document_id: str) -> Result[list[StoredChunkMetadata], Exception]:
         try:
@@ -143,11 +184,11 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 c.chunk_id,
                 c.document_id,
                 c.content_text or c.embedding_input or "",
-                c.chunk_index,
                 list(c.heading_path),
                 c.page_number,
-                c.document_id,
+                c.chunk_index,
                 c.language if c.language in {"vi", "en", "mixed"} else "vi",
+                c.document_id,
             )
             for c in chunks
         ]
@@ -178,7 +219,8 @@ class PostgresChunkRepository(PostgresRepositoryBase):
                 heading_path = EXCLUDED.heading_path,
                 page_number = EXCLUDED.page_number,
                 sort_order = EXCLUDED.sort_order,
-                language = EXCLUDED.language;
+                language = EXCLUDED.language,
+                deleted_at = NULL;
             """,
             rows,
         )

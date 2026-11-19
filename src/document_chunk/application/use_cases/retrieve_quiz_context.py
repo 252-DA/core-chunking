@@ -55,7 +55,7 @@ class RetrieveQuizContextUseCase:
         self,
         metadata_store: IMetadataStore,
         semantic_search: SearchChunksUseCase | None = None,
-        max_chunk_chars: int = 1600,
+        max_chunk_chars: int = 2600,
         max_total_chars: int = 8000,
     ) -> None:
         self._metadata_store = metadata_store

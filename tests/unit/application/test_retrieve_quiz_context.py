@@ -23,7 +23,7 @@ def _curriculum():
             course_id="CO3115",
             code="CO3115",
             title_vi="Phân tích và Thiết kế Hệ thống",
-            extraction_confidence=0.9,
+
         ),
         [],
         [

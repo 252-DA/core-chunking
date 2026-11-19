@@ -13,6 +13,7 @@ _WORKER_DIR = str(Path(__file__).parent.parent.parent.parent / "worker")
 if _WORKER_DIR not in sys.path:
     sys.path.insert(0, _WORKER_DIR)
 
+from tests.support import as_llm_client
 from document_chunk.domain.ports.metadata_store import (
     StoredAssessment,
     StoredChapter,
@@ -53,7 +54,6 @@ _STORED_COURSE = StoredCourse(
     course_id="CO3115",
     code="CO3115",
     title_vi="Phân tích và Thiết kế Hệ thống",
-    extraction_confidence=0.9,
 )
 
 _STORED_LO = StoredLearningOutcome(
@@ -79,7 +79,7 @@ _STORED_CHUNK = StoredChunkMetadata(
 
 @pytest.fixture
 def mock_llm() -> MagicMock:
-    llm = MagicMock()
+    llm = as_llm_client(MagicMock())
     llm.model_id = "gemini-test"
     llm.generate.return_value = Ok(_FAKE_LLM_RESPONSE)
     return llm
@@ -95,7 +95,6 @@ def mock_store() -> MagicMock:
         [StoredAssessment(assessment_id="CO3115:A.O.2", course_id="CO3115", code="A.O.2", name_vi="Kiểm tra giữa kỳ", category="midterm")],
     ))
     store.list_chunks_for_lo.return_value = Ok([_STORED_CHUNK])
-    store.persist_enrichment_batch.return_value = Ok(None)
     store.list_los_by_chapter.return_value = Ok([_STORED_LO])
     store.list_los_by_assessment.return_value = Ok([_STORED_LO])
     return store
@@ -172,18 +171,18 @@ def test_no_curriculum_returns_error(use_case, mock_store):
     assert result.is_err()
 
 
-def test_persist_enrichment_called(use_case, mock_store):
+def test_generated_items_are_returned_not_persisted(use_case, mock_store):
     req = GenerateCurriculumQuizRequest(
         course_id="CO3115",
         target_kind="lo",
         target_code="L.O.3.1",
         count=2,
     )
-    use_case.execute(req)
-    mock_store.persist_enrichment_batch.assert_called_once()
-    call_kwargs = mock_store.persist_enrichment_batch.call_args
-    quiz_items = call_kwargs[1].get("quiz_items") or call_kwargs[0][2]
-    assert len(quiz_items) >= 2
+    # Worker tính, core-api ghi (docs/ke-hoach-ranh-gioi-du-lieu.md): use case
+    # trả câu về cho runner gửi đi, không gọi hàm ghi quiz_items nào.
+    result = use_case.execute(req)
+    assert result.is_ok(), str(result.error)
+    assert len(result.unwrap().items) >= 2
 
 
 def test_question_ids_returned(use_case):

@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 from document_chunk.domain.entities.document import Document, DocumentType
 from document_chunk.domain.outbox_events import OutboxEventType
@@ -90,6 +91,12 @@ class StoredLessonCard:
     title: str = ""
     bullets: tuple[str, ...] = ()
     key_insight: str | None = None
+    # Card sinh theo LO có thêm ví dụ, lỗi hiểu nhầm và một cặp câu tự kiểm
+    # tra (mặt lật của flashcard). Card từ enrichment để trống các trường này.
+    example: str | None = None
+    misconception: str | None = None
+    check_question: str | None = None
+    check_answer: str | None = None
     card_index: int = 0
     model_id: str | None = None
 
@@ -108,6 +115,11 @@ class StoredQuizItem:
     difficulty: str = "medium"
     question_index: int = 0
     model_id: str | None = None
+    # Kiểu câu và đáp án dạng JSON ghi vào quiz_items.correct_answer (xem
+    # core-api src/modules/question/question-types.ts). ``correct_answer`` None nghĩa là trắc
+    # nghiệm một đáp án: lấy ``choices[correct_index]`` như trước.
+    question_type: str = "MCQ_SINGLE"
+    correct_answer: Any = None
 
 
 @dataclass(frozen=True)
@@ -118,8 +130,9 @@ class StoredCourse:
     title_en: str | None = None
     credits: int | None = None
     semester: str | None = None
+    syllabus_version: str | None = None
+    lo_year: str | None = None
     source_document_id: str | None = None
-    extraction_confidence: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -129,6 +142,11 @@ class StoredChapter:
     code: str
     title: str
     order_index: int = 0
+    title_en: str | None = None
+    source_section: str | None = None
+    source_page: int | None = None
+    # Mục con của chương, nối bằng "; " — xem Chapter.topics.
+    topics: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +159,10 @@ class StoredLearningOutcome:
     statement_en: str | None = None
     bloom_level: str | None = None
     cdio_level: int | None = None
+    bloom_provenance: str = "inferred"
+    cdio_provenance: str = "inferred"
+    source_section: str | None = None
+    source_page: int | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +174,21 @@ class StoredAssessment:
     name_en: str | None = None
     category: str = "quiz"
     weight: float | None = None
+    parent_code: str | None = None
+    activity_type: str | None = None
+    weight_provenance: str = "inferred"
+    source_section: str | None = None
+    source_page: int | None = None
+
+
+@dataclass(frozen=True)
+class StoredChapterLOLink:
+    """Cạnh chương ↔ LO. Quan hệ nhiều–nhiều, đọc từ bảng mục 6."""
+    chapter_id: str
+    lo_id: str
+    provenance: str = "extracted"
+    source_section: str | None = None
+    source_page: int | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +197,22 @@ class StoredChunkLOMapping:
     lo_id: str
     confidence: float
     source: str
+    provenance: str = "inferred"
+
+
+@dataclass(frozen=True)
+class StoredDocumentPlacement:
+    """Vai trò và chương của một tài liệu trong học phần.
+
+    role: lecture | reference | exercise. chapter_provenance: module | file_name |
+    content | confirmed — nguồn gốc của chương, None khi chưa xác định.
+    """
+    document_id: str
+    course_id: str
+    role: str = "lecture"
+    chapter_code: str | None = None
+    chapter_provenance: str | None = None
+    chapter_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -178,27 +231,12 @@ class IMetadataStore(ABC):
     """
     Port: SQL metadata + ingestion status + outbox events.
     SQL là source of truth, Qdrant/Neo4j là derived stores.
+
+    Ranh giới dữ liệu (docs/ke-hoach-ranh-gioi-du-lieu.md): worker chỉ ghi bảng AI
+    (chunks, chunk_lo_mappings, concepts, chunk_concepts, knowledge_relations,
+    llm_usage_logs) và sự kiện của chính nó vào outbox_events. Bảng nghiệp vụ do
+    core-api ghi.
     """
-
-    @abstractmethod
-    def upsert_document(
-        self,
-        document: Document,
-        metadata: dict[str, str],
-        status: IngestionStatus = IngestionStatus.QUEUED,
-    ) -> Result[None, Exception]:
-        """Insert/update document metadata."""
-        ...
-
-    @abstractmethod
-    def update_document_status(
-        self,
-        document_id: str,
-        status: IngestionStatus,
-        error_msg: str | None = None,
-    ) -> Result[None, Exception]:
-        """Update status document theo state machine."""
-        ...
 
     @abstractmethod
     def upsert_chunks(
@@ -217,6 +255,15 @@ class IMetadataStore(ABC):
         payload: dict,
     ) -> Result[str, Exception]:
         """Bulk upsert chunk metadata and append one outbox event in the same transaction."""
+        ...
+
+    @abstractmethod
+    def soft_delete_document_chunks(self, document_id: str) -> Result[int, Exception]:
+        """
+        Đặt ``chunks.deleted_at`` cho các chunk còn sống của một tài liệu đã bị
+        core-api soft-delete (xử lý DOCUMENT_DELETED). Idempotent; không đụng
+        ``documents``. Trả số chunk vừa ẩn.
+        """
         ...
 
     @abstractmethod
@@ -252,31 +299,21 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def persist_enrichment_batch(
+    def persist_concept_enrichment(
         self,
         document_id: str,
-        lesson_cards: list[StoredLessonCard],
-        quiz_items: list[StoredQuizItem],
         concepts: list[StoredConcept],
         chunk_concepts: list[StoredChunkConcept],
         outbox_event_type: OutboxEventType | None = None,
         outbox_payload: dict | None = None,
     ) -> Result[str | None, Exception]:
         """
-        Replace generated content for one document and optionally append one outbox event
-        in the same transaction. Returns the appended event_id, or None when no outbox
-        event is written.
+        Phần dữ liệu AI của enrichment trong một transaction: thay chunk_concepts
+        của document, upsert concepts, và (nếu có) thay sự kiện outbox PENDING
+        cùng loại bằng sự kiện mới. Không đụng lesson_cards/quiz_items — học liệu
+        do core-api ghi (ENRICHMENT_CONTENT_RESULT). Trả event_id hoặc None;
+        Err(DocumentStaleError) khi document đã xoá.
         """
-        ...
-
-    @abstractmethod
-    def persist_curriculum_quiz_items(
-        self,
-        lo_id: str,
-        bloom_level: str | int | None,
-        quiz_items: list[StoredQuizItem],
-    ) -> Result[None, Exception]:
-        """Append generated quiz drafts for one LO in a single transaction."""
         ...
 
     @abstractmethod
@@ -321,11 +358,6 @@ class IMetadataStore(ABC):
         ...
 
     @abstractmethod
-    def delete(self, document_id: str) -> Result[None, Exception]:
-        """Xóa document metadata/chunks và append cleanup outbox event trong cùng transaction."""
-        ...
-
-    @abstractmethod
     def get_document_status(
         self, document_id: str
     ) -> Result[tuple[IngestionStatus, str | None, str | None] | None, Exception]:
@@ -335,20 +367,24 @@ class IMetadataStore(ABC):
         """
         ...
 
-    # ------------------------------------------------------------------
-    # Curriculum methods
-    # ------------------------------------------------------------------
+    @abstractmethod
+    def get_document_processing_generation(
+        self, document_id: str
+    ) -> Result[int | None, Exception]:
+        """
+        ``documents.processing_generation`` hiện tại (core-api tăng mỗi lần đưa tài liệu
+        vào hàng đợi xử lý); None nếu tài liệu không có hoặc đã xoá. Chỉ đọc: worker dùng
+        để bỏ job của lượt cũ thay vì chạy song song với lượt mới.
+        """
+        ...
+
+    # -- Đề cương (chỉ đọc: core-api ghi khi giảng viên áp dụng) --
 
     @abstractmethod
-    def upsert_curriculum(
-        self,
-        course: "StoredCourse",
-        chapters: builtins.list[StoredChapter],
-        learning_outcomes: builtins.list[StoredLearningOutcome],
-        assessments: builtins.list[StoredAssessment],
-        lo_assessment_links: builtins.list[tuple[str, str]],
-    ) -> Result[None, Exception]:
-        """Insert/update toàn bộ curriculum cho một course trong một transaction."""
+    def list_chapter_lo_links(
+        self, course_id: str
+    ) -> Result[builtins.list[StoredChapterLOLink], Exception]:
+        """Quan hệ chương ↔ LO của một học phần (nhiều–nhiều)."""
         ...
 
     @abstractmethod
@@ -393,18 +429,44 @@ class IMetadataStore(ABC):
     def list_chunks_for_lo(
         self, lo_id: str
     ) -> Result[builtins.list[StoredChunkMetadata], Exception]:
-        """Lấy chunks đã map tới lo_id, sort theo confidence DESC."""
+        """Lấy chunks đã map tới lo_id: tài liệu bài giảng trước tài liệu tham khảo,
+        rồi theo confidence DESC."""
+        ...
+
+    # -- Vị trí của tài liệu trong học phần (vai trò + chương) --
+
+    @abstractmethod
+    def get_document_placement(
+        self, document_id: str
+    ) -> Result["StoredDocumentPlacement | None", Exception]:
         ...
 
     @abstractmethod
-    def update_content_generation_request(
+    def delete_inferred_chunk_lo_mappings(self, document_id: str) -> Result[int, Exception]:
+        """Xoá cạnh chunk → LO do hệ thống suy ra của một tài liệu (giữ cạnh đã xác nhận)."""
+        ...
+
+    @abstractmethod
+    def record_llm_usage(
         self,
-        request_id: str,
+        *,
+        provider: str,
+        model: str,
+        use_case: str,
         status: str,
-        generated_count: int | None = None,
-        last_error: str | None = None,
+        course_id: str | None = None,
+        user_id: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float = 0,
+        latency_ms: int | None = None,
+        trace_id: str | None = None,
     ) -> Result[None, Exception]:
-        """Update lifecycle state for an asynchronous content-generation request."""
+        """
+        Append one row to llm_usage_logs for cost/latency observability.
+        Best-effort: callers should treat a failure here as non-fatal to the
+        use case that triggered the LLM call.
+        """
         ...
 
     # ------------------------------------------------------------------

@@ -44,6 +44,11 @@ class IVectorStore(ABC):
         """Xóa toàn bộ chunks của một document."""
         ...
 
+    def delete_stale(self, document_id: str, keep_ids: list[str]) -> Result[None, Exception]:
+        """Optional snapshot replacement; adapters must implement before enabling it."""
+        from document_chunk.shared.result import Err
+        return Err(NotImplementedError("Vector store does not support snapshot replacement"))
+
     @abstractmethod
     def count(self) -> Result[int, Exception]:
         """Tổng số chunks đang lưu."""

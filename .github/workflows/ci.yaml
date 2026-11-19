@@ -1,0 +1,25 @@
+name: ci
+
+# Test repo này trên layout meta-repo: lấy da-platform nhánh dev làm nền
+# (đủ repo anh em + contracts), đặt commit đang test vào packages-ai/, rồi chạy
+# scripts/ci/test-component.sh packages-ai. Định nghĩa đầy đủ:
+# 252-DA/da-platform/.github/workflows/component.yaml.
+#
+# Không còn SHA repo anh em ghim cứng ở đây (nguyên nhân CI đỏ từ 09/2026).
+# PR cần sửa đồng thời repo khác thì CI ở đây đỏ cho tới khi repo kia vào dev;
+# kết quả chuẩn là CI của PR meta-repo bump gitlink cả hai.
+
+on:
+  push:
+    branches: [dev, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: 252-DA/da-platform/.github/workflows/component.yaml@dev
+    with:
+      component: packages-ai

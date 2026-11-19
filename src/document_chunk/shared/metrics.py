@@ -23,6 +23,13 @@ CHUNKS_CREATED = Counter(
     ["doc_type"],
 )
 
+PDF_PAGES = Counter(
+    "pdf_pages_total",
+    "PDF pages by assessed status and the backend that finally read them",
+    # status=text|complex_layout|needs_ocr|empty, backend=pymupdf|docling|none
+    ["status", "backend"],
+)
+
 # Histograms — đo phân phối (latency, size)
 PROCESSING_DURATION = Histogram(
     "document_processing_duration_seconds",
